@@ -59,6 +59,7 @@ x86/
 .env.test.local
 .env.production.local
 appsettings.Development.json
+appsettings.Local.json
 
 # OS files
 Thumbs.db
