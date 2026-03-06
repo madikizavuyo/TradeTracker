@@ -174,6 +174,7 @@ namespace TradeHelper.Controllers
                     tradesImported = result.TradesImported,
                     tradesSkipped = result.TradesSkipped,
                     tradesFailed = result.TradesFailed,
+                    detectedCurrency = result.DetectedCurrency,
                     errors = result.Errors
                 });
             }

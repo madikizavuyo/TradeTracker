@@ -22,23 +22,10 @@ export default function Dashboard() {
   }, []);
 
   const loadDashboardData = async () => {
-    // #region agent log
-    fetch('http://127.0.0.1:7242/ingest/1fee1a4b-310a-4c60-9f48-bebb8e3622bd',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'Dashboard.tsx:24',message:'loadDashboardData entry',data:{},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'H2,H3'})}).catch(()=>{});
-    // #endregion
     try {
       const response = await api.getDashboardData();
-      // #region agent log
-      fetch('http://127.0.0.1:7242/ingest/1fee1a4b-310a-4c60-9f48-bebb8e3622bd',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'Dashboard.tsx:27',message:'API response received',data:{hasResponse:!!response,responseKeys:Object.keys(response||{}),responseType:typeof response,isArray:Array.isArray(response)},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'H2'})}).catch(()=>{});
-      // #endregion
-      const finalData = response;
-      // #region agent log
-      fetch('http://127.0.0.1:7242/ingest/1fee1a4b-310a-4c60-9f48-bebb8e3622bd',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'Dashboard.tsx:28',message:'Data before setState',data:{hasMonthlyPerformance:!!finalData?.monthlyPerformance,monthlyPerformanceLength:finalData?.monthlyPerformance?.length||0,monthlyPerformanceSample:finalData?.monthlyPerformance?.[0]||null,hasRecentTrades:!!finalData?.recentTrades},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'H1,H4'})}).catch(()=>{});
-      // #endregion
-      setData(finalData);
+      setData(response);
     } catch (error) {
-      // #region agent log
-      fetch('http://127.0.0.1:7242/ingest/1fee1a4b-310a-4c60-9f48-bebb8e3622bd',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'Dashboard.tsx:29',message:'Error in loadDashboardData',data:{errorMessage:error instanceof Error?error.message:String(error),errorType:error?.constructor?.name},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'H3'})}).catch(()=>{});
-      // #endregion
       console.error('Failed to load dashboard data:', error);
       setError('Failed to load dashboard data. Please try again.');
     } finally {
@@ -220,54 +207,26 @@ export default function Dashboard() {
 
 // Chart data generators
 function getEquityCurveData(data: DashboardData | null) {
-  // #region agent log
-  fetch('http://127.0.0.1:7242/ingest/1fee1a4b-310a-4c60-9f48-bebb8e3622bd',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'Dashboard.tsx:222',message:'getEquityCurveData called',data:{hasData:!!data,hasMonthlyPerformance:!!data?.monthlyPerformance,monthlyPerformanceLength:data?.monthlyPerformance?.length||0,hasRecentTrades:!!data?.recentTrades,recentTradesLength:data?.recentTrades?.length||0},timestamp:Date.now(),sessionId:'debug-session',runId:'post-fix',hypothesisId:'H1'})}).catch(()=>{});
-  // #endregion
-  
-  // Calculate equity curve from monthly performance (cumulative)
   if (data?.monthlyPerformance && data.monthlyPerformance.length > 0) {
     let cumulative = 0;
-    const equityData = data.monthlyPerformance.map((month) => {
+    return data.monthlyPerformance.map((month) => {
       cumulative += month.profitLoss;
       return {
         date: month.month,
         profitLoss: cumulative
       };
     });
-    // #region agent log
-    fetch('http://127.0.0.1:7242/ingest/1fee1a4b-310a-4c60-9f48-bebb8e3622bd',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'Dashboard.tsx:235',message:'Equity curve from monthly performance',data:{equityDataLength:equityData.length,firstPoint:equityData[0],lastPoint:equityData[equityData.length-1]},timestamp:Date.now(),sessionId:'debug-session',runId:'post-fix',hypothesisId:'H1'})}).catch(()=>{});
-    // #endregion
-    return equityData;
   }
-  
-  // Fallback: empty data
-  // #region agent log
-  fetch('http://127.0.0.1:7242/ingest/1fee1a4b-310a-4c60-9f48-bebb8e3622bd',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'Dashboard.tsx:242',message:'Equity curve fallback - no data',data:{},timestamp:Date.now(),sessionId:'debug-session',runId:'post-fix',hypothesisId:'H1'})}).catch(()=>{});
-  // #endregion
   return [{ date: 'No Data', profitLoss: 0 }];
 }
 
 function getMonthlyData(data: DashboardData | null) {
-  // #region agent log
-  fetch('http://127.0.0.1:7242/ingest/1fee1a4b-310a-4c60-9f48-bebb8e3622bd',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'Dashboard.tsx:247',message:'getMonthlyData called',data:{hasData:!!data,hasMonthlyPerformance:!!data?.monthlyPerformance,monthlyPerformanceLength:data?.monthlyPerformance?.length||0,monthlyPerformanceSample:data?.monthlyPerformance?.[0]||null},timestamp:Date.now(),sessionId:'debug-session',runId:'post-fix',hypothesisId:'H1,H4'})}).catch(()=>{});
-  // #endregion
-  
-  // Use monthly performance from API
   if (data?.monthlyPerformance && data.monthlyPerformance.length > 0) {
-    const monthlyData = data.monthlyPerformance.map((month) => ({
+    return data.monthlyPerformance.map((month) => ({
       name: month.month,
       value: month.profitLoss
     }));
-    // #region agent log
-    fetch('http://127.0.0.1:7242/ingest/1fee1a4b-310a-4c60-9f48-bebb8e3622bd',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'Dashboard.tsx:255',message:'Monthly data from API',data:{monthlyDataLength:monthlyData.length,firstMonth:monthlyData[0],lastMonth:monthlyData[monthlyData.length-1]},timestamp:Date.now(),sessionId:'debug-session',runId:'post-fix',hypothesisId:'H1,H4'})}).catch(()=>{});
-    // #endregion
-    return monthlyData;
   }
-  
-  // Fallback: empty data
-  // #region agent log
-  fetch('http://127.0.0.1:7242/ingest/1fee1a4b-310a-4c60-9f48-bebb8e3622bd',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'Dashboard.tsx:263',message:'Monthly data fallback - no data',data:{},timestamp:Date.now(),sessionId:'debug-session',runId:'post-fix',hypothesisId:'H1,H4'})}).catch(()=>{});
-  // #endregion
   return [{ name: 'No Data', value: 0 }];
 }
 

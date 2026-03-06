@@ -19,6 +19,8 @@ namespace TradeHelper.Services
         private readonly ApplicationDbContext _context;
         private readonly ILogger<ImportService> _logger;
         private readonly IServiceProvider _serviceProvider;
+        private readonly CurrencyService _currencyService;
+        private HashSet<string> _importedInBatch = new();
         
         private string GetDebugLogPath()
         {
@@ -28,12 +30,152 @@ namespace TradeHelper.Services
             return Path.Combine(logDir, "debug.log");
         }
 
-        public ImportService(ApplicationDbContext context, ILogger<ImportService> logger, IServiceProvider serviceProvider)
+        public ImportService(ApplicationDbContext context, ILogger<ImportService> logger,
+            IServiceProvider serviceProvider, CurrencyService currencyService)
         {
             _context = context;
             _logger = logger;
             _serviceProvider = serviceProvider;
+            _currencyService = currencyService;
             ExcelPackage.LicenseContext = LicenseContext.NonCommercial;
+        }
+
+        // ── Shared column-name aliases for broker Excel files ──────────────────
+        private static readonly Dictionary<string, string> _colAliases =
+            new(StringComparer.OrdinalIgnoreCase)
+        {
+            ["time"] = "entryTime", ["open time"] = "entryTime",
+            ["entry time"] = "entryTime", ["date"] = "entryTime",
+            ["open date"] = "entryTime", ["datetime"] = "entryTime",
+
+            ["position"] = "positionId", ["ticket"] = "positionId",
+            ["order"] = "positionId", ["deal"] = "positionId", ["#"] = "positionId",
+
+            ["symbol"] = "symbol", ["instrument"] = "symbol",
+            ["pair"] = "symbol", ["market"] = "symbol", ["item"] = "symbol",
+
+            ["type"] = "type", ["direction"] = "type", ["side"] = "type",
+
+            ["volume"] = "volume", ["lots"] = "volume",
+            ["size"] = "volume", ["lot size"] = "volume", ["quantity"] = "volume",
+
+            ["price"] = "price",
+            ["open price"] = "entryPrice", ["entry price"] = "entryPrice",
+            ["close price"] = "exitPrice", ["exit price"] = "exitPrice",
+
+            ["s / l"] = "stopLoss", ["stop loss"] = "stopLoss",
+            ["sl"] = "stopLoss", ["s/l"] = "stopLoss",
+
+            ["t / p"] = "takeProfit", ["take profit"] = "takeProfit",
+            ["tp"] = "takeProfit", ["t/p"] = "takeProfit",
+
+            ["commission"] = "commission", ["comm"] = "commission",
+            ["swap"] = "swap", ["rollover"] = "swap", ["financing"] = "swap",
+
+            ["profit"] = "profit", ["p/l"] = "profit", ["pnl"] = "profit",
+            ["profit/loss"] = "profit", ["net p/l"] = "profit",
+        };
+
+        private static readonly HashSet<string> _sectionMarkers =
+            new(StringComparer.OrdinalIgnoreCase)
+        {
+            "Orders", "Deals", "Open Positions", "Results", "Working Orders",
+            "Financing", "Deposits", "Summary", "Balance", "Positions"
+        };
+
+        /// <summary>
+        /// Build a canonical-name → column-index map from a header row.
+        /// Handles duplicates like "Time" and "Price" that appear for both entry and exit.
+        /// </summary>
+        private static Dictionary<string, int> BuildColumnMap(ExcelWorksheet ws, int headerRow)
+        {
+            var map = new Dictionary<string, int>();
+            bool seenFirstTime = false, seenFirstPrice = false;
+
+            for (int col = 1; col <= ws.Dimension.End.Column; col++)
+            {
+                var h = ws.Cells[headerRow, col].Value?.ToString()?.Trim();
+                if (string.IsNullOrEmpty(h) || !_colAliases.TryGetValue(h, out var canon))
+                    continue;
+
+                if (canon == "entryTime")
+                {
+                    if (!seenFirstTime) { map["entryTime"] = col; seenFirstTime = true; }
+                    else if (!map.ContainsKey("exitTime")) map["exitTime"] = col;
+                }
+                else if (canon == "price")
+                {
+                    if (!seenFirstPrice) { map["entryPrice"] = col; seenFirstPrice = true; }
+                    else if (!map.ContainsKey("exitPrice")) map["exitPrice"] = col;
+                }
+                else if (!map.ContainsKey(canon))
+                {
+                    map[canon] = col;
+                }
+            }
+            return map;
+        }
+
+        /// <summary>
+        /// Scan the first 30 rows for one that looks like a trades/positions header
+        /// (must have at least entryTime + symbol + one of type/profit).
+        /// </summary>
+        private static int FindBrokerTradesHeaderRow(ExcelWorksheet ws)
+        {
+            for (int row = 1; row <= Math.Min(30, ws.Dimension.End.Row); row++)
+            {
+                var map = BuildColumnMap(ws, row);
+                if (map.ContainsKey("entryTime") && map.ContainsKey("symbol") &&
+                    (map.ContainsKey("type") || map.ContainsKey("profit")))
+                    return row;
+            }
+            return -1;
+        }
+
+        private static readonly string[] _excelDateFormats =
+        {
+            "yyyy.MM.dd HH:mm:ss", "yyyy-MM-dd HH:mm:ss", "yyyy/MM/dd HH:mm:ss",
+            "dd/MM/yyyy HH:mm:ss", "MM/dd/yyyy HH:mm:ss",
+            "dd/MM/yyyy HH:mm",    "MM/dd/yyyy HH:mm",
+            "yyyy.MM.dd",          "yyyy-MM-dd",
+            "dd/MM/yyyy",          "MM/dd/yyyy"
+        };
+
+        private static bool TryParseExcelDateTime(object? value, out DateTime result)
+        {
+            result = default;
+            if (value == null) return false;
+            if (value is DateTime dt) { result = dt; return true; }
+            if (value is double d) { result = DateTime.FromOADate(d); return true; }
+
+            var s = value.ToString();
+            if (string.IsNullOrWhiteSpace(s)) return false;
+
+            return DateTime.TryParseExact(s, _excelDateFormats,
+                       CultureInfo.InvariantCulture, DateTimeStyles.None, out result)
+                || DateTime.TryParse(s, CultureInfo.InvariantCulture,
+                       DateTimeStyles.None, out result);
+        }
+
+        /// <summary>
+        /// Checks DB and current in-memory batch to prevent duplicate imports.
+        /// Matches on UserId + Instrument + Type + EntryPrice + DateTime (±1 min).
+        /// </summary>
+        private async Task<bool> IsDuplicateTradeAsync(string userId, Trade trade)
+        {
+            var batchKey = $"{userId}|{trade.Instrument}|{trade.Type}|{trade.EntryPrice}|{trade.DateTime:yyyyMMddHHmm}";
+            if (!_importedInBatch.Add(batchKey))
+                return true;
+
+            var oneMinBefore = trade.DateTime.AddMinutes(-1);
+            var oneMinAfter = trade.DateTime.AddMinutes(1);
+            return await _context.Trades.AnyAsync(t =>
+                t.UserId == userId &&
+                t.Instrument == trade.Instrument &&
+                t.Type == trade.Type &&
+                t.EntryPrice == trade.EntryPrice &&
+                t.DateTime >= oneMinBefore &&
+                t.DateTime <= oneMinAfter);
         }
 
         public async Task<ImportResult> ImportTradesFromFileAsync(
@@ -44,6 +186,8 @@ namespace TradeHelper.Services
             string? currency = null,
             int? strategyId = null)
         {
+            _importedInBatch.Clear();
+
             var result = new ImportResult
             {
                 TradesImported = 0,
@@ -71,6 +215,33 @@ namespace TradeHelper.Services
                     default:
                         result.Errors.Add($"Unsupported file type: {extension}");
                         return result;
+                }
+
+                // ── Apply display-currency conversion to newly added trades ──
+                var userSettings = await _context.UserSettings
+                    .FirstOrDefaultAsync(s => s.UserId == userId);
+                var displayCurrency = userSettings?.DisplayCurrency ?? "USD";
+                var displaySymbol = userSettings?.DisplayCurrencySymbol ?? "$";
+
+                var pendingTrades = _context.ChangeTracker
+                    .Entries<Trade>()
+                    .Where(e => e.State == EntityState.Added)
+                    .Select(e => e.Entity)
+                    .ToList();
+
+                foreach (var trade in pendingTrades)
+                {
+                    trade.DisplayCurrency = displayCurrency;
+                    trade.DisplayCurrencySymbol = displaySymbol;
+
+                    if (trade.ProfitLoss.HasValue &&
+                        !string.Equals(trade.Currency, displayCurrency, StringComparison.OrdinalIgnoreCase))
+                    {
+                        trade.ProfitLossDisplay = await _currencyService.ConvertAsync(
+                            trade.ProfitLoss.Value, trade.Currency, displayCurrency);
+                    }
+
+                    result.DetectedCurrency ??= trade.Currency;
                 }
 
                 await _context.SaveChangesAsync();
@@ -166,25 +337,12 @@ namespace TradeHelper.Services
                     
                     if (trade != null)
                     {
-                        // Check for duplicates (same instrument, entry price, and date within 1 minute)
-                        var oneMinuteBefore = trade.DateTime.AddMinutes(-1);
-                        var oneMinuteAfter = trade.DateTime.AddMinutes(1);
-                        var existing = await _context.Trades
-                            .FirstOrDefaultAsync(t =>
-                                t.UserId == userId &&
-                                t.Instrument == trade.Instrument &&
-                                t.EntryPrice == trade.EntryPrice &&
-                                t.DateTime >= oneMinuteBefore &&
-                                t.DateTime <= oneMinuteAfter);
-
-                        if (existing == null)
+                        if (await IsDuplicateTradeAsync(userId, trade))
+                            result.TradesSkipped++;
+                        else
                         {
                             _context.Trades.Add(trade);
                             result.TradesImported++;
-                        }
-                        else
-                        {
-                            result.TradesSkipped++;
                         }
                     }
                     else
@@ -213,6 +371,30 @@ namespace TradeHelper.Services
 
             if (worksheet.Dimension == null)
                 return;
+
+            // Detect broker trade report: known titles or any row with trade-like headers
+            var firstCell = worksheet.Cells[1, 1].Value?.ToString()?.Trim() ?? "";
+            var knownTitles = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+            {
+                "Trade History Report", "Trade Report", "Trading Report",
+                "Account Report", "Account Statement", "Statement"
+            };
+
+            if (knownTitles.Contains(firstCell))
+            {
+                _logger.LogInformation("Detected broker trade report: '{Title}'", firstCell);
+                await ImportFromBrokerExcelAsync(worksheet, userId, brokerName, currency, strategyId, result);
+                return;
+            }
+
+            // Fallback: scan for any row that looks like a positions/trades header
+            var detectedHeader = FindBrokerTradesHeaderRow(worksheet);
+            if (detectedHeader > 0)
+            {
+                _logger.LogInformation("Detected trade data header at row {Row}", detectedHeader);
+                await ImportFromBrokerExcelAsync(worksheet, userId, brokerName, currency, strategyId, result, detectedHeader);
+                return;
+            }
 
             var startRow = 1;
             var headers = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
@@ -278,25 +460,12 @@ namespace TradeHelper.Services
                     
                     if (trade != null)
                     {
-                        // Check for duplicates
-                        var oneMinuteBefore = trade.DateTime.AddMinutes(-1);
-                        var oneMinuteAfter = trade.DateTime.AddMinutes(1);
-                        var existing = await _context.Trades
-                            .FirstOrDefaultAsync(t =>
-                                t.UserId == userId &&
-                                t.Instrument == trade.Instrument &&
-                                t.EntryPrice == trade.EntryPrice &&
-                                t.DateTime >= oneMinuteBefore &&
-                                t.DateTime <= oneMinuteAfter);
-
-                        if (existing == null)
+                        if (await IsDuplicateTradeAsync(userId, trade))
+                            result.TradesSkipped++;
+                        else
                         {
                             _context.Trades.Add(trade);
                             result.TradesImported++;
-                        }
-                        else
-                        {
-                            result.TradesSkipped++;
                         }
                     }
                     else
@@ -605,6 +774,219 @@ namespace TradeHelper.Services
             }
         }
 
+        /// <summary>
+        /// Generic broker Excel importer – uses dynamic column mapping so it handles
+        /// cTrader and any other platform that produces a spreadsheet with recognizable
+        /// trade-like headers (Time, Symbol, Type, Price, Profit, etc.).
+        /// </summary>
+        private async Task ImportFromBrokerExcelAsync(
+            ExcelWorksheet worksheet,
+            string userId,
+            string? brokerName,
+            string? currency,
+            int? strategyId,
+            ImportResult result,
+            int? preDetectedHeaderRow = null)
+        {
+            string detectedCurrency = currency ?? "USD";
+            string detectedBroker = brokerName ?? "Unknown";
+
+            // Try to extract account metadata from the first few rows
+            for (int row = 1; row <= Math.Min(10, worksheet.Dimension.End.Row); row++)
+            {
+                var label = worksheet.Cells[row, 1].Value?.ToString()?.Trim();
+                if (string.IsNullOrEmpty(label)) continue;
+
+                // Look for currency in any column on that row
+                for (int col = 2; col <= Math.Min(8, worksheet.Dimension.End.Column); col++)
+                {
+                    var val = worksheet.Cells[row, col].Value?.ToString()?.Trim();
+                    if (string.IsNullOrEmpty(val)) continue;
+
+                    if ((label.StartsWith("Account", StringComparison.OrdinalIgnoreCase) ||
+                         label.StartsWith("Currency", StringComparison.OrdinalIgnoreCase)) && currency == null)
+                    {
+                        var m = Regex.Match(val, @"\b([A-Z]{3})\b");
+                        if (m.Success && m.Groups[1].Value is "USD" or "EUR" or "GBP" or "JPY" or "CHF"
+                            or "AUD" or "NZD" or "CAD" or "HKD" or "SGD" or "PLN" or "CZK" or "HUF")
+                            detectedCurrency = m.Groups[1].Value;
+                    }
+                    if ((label.StartsWith("Company", StringComparison.OrdinalIgnoreCase) ||
+                         label.StartsWith("Broker", StringComparison.OrdinalIgnoreCase) ||
+                         label.StartsWith("Server", StringComparison.OrdinalIgnoreCase)) && brokerName == null)
+                    {
+                        detectedBroker = val;
+                    }
+                }
+            }
+
+            int headerRow = preDetectedHeaderRow ?? FindBrokerTradesHeaderRow(worksheet);
+            if (headerRow == -1)
+            {
+                result.Errors.Add("Could not find a row with recognizable trade column headers");
+                return;
+            }
+
+            var cols = BuildColumnMap(worksheet, headerRow);
+            if (!cols.ContainsKey("symbol"))
+            {
+                result.Errors.Add("Required 'Symbol' column not found in the header row");
+                return;
+            }
+
+            _logger.LogInformation(
+                "Broker Excel: header row {Row}, mapped columns [{Cols}], currency={Cur}, broker={Bro}",
+                headerRow, string.Join(", ", cols.Select(kv => $"{kv.Key}={kv.Value}")),
+                detectedCurrency, detectedBroker);
+
+            for (int row = headerRow + 1; row <= worksheet.Dimension.End.Row; row++)
+            {
+                var firstCell = worksheet.Cells[row, 1].Value?.ToString()?.Trim() ?? "";
+
+                if (_sectionMarkers.Contains(firstCell))
+                    break;
+                if (string.IsNullOrWhiteSpace(firstCell))
+                    continue;
+
+                var symbol = worksheet.Cells[row, cols["symbol"]].Value?.ToString()?.Trim();
+                if (string.IsNullOrWhiteSpace(symbol))
+                    continue;
+
+                try
+                {
+                    // Entry time (required)
+                    if (!cols.ContainsKey("entryTime") ||
+                        !TryParseExcelDateTime(worksheet.Cells[row, cols["entryTime"]].Value, out var entryTime))
+                        continue;
+
+                    // Type / direction
+                    var tradeType = "Long";
+                    if (cols.TryGetValue("type", out var typeCol))
+                    {
+                        var t = worksheet.Cells[row, typeCol].Value?.ToString()?.Trim()?.ToLower();
+                        if (t is "sell" or "short" or "s")
+                            tradeType = "Short";
+                    }
+
+                    // Volume
+                    decimal? lotSize = null;
+                    if (cols.TryGetValue("volume", out var volCol))
+                    {
+                        if (decimal.TryParse(worksheet.Cells[row, volCol].Value?.ToString(),
+                            NumberStyles.Any, CultureInfo.InvariantCulture, out var v))
+                            lotSize = v;
+                    }
+
+                    // Entry price (required)
+                    if (!cols.ContainsKey("entryPrice") ||
+                        !decimal.TryParse(worksheet.Cells[row, cols["entryPrice"]].Value?.ToString(),
+                            NumberStyles.Any, CultureInfo.InvariantCulture, out var entryPrice))
+                        continue;
+
+                    // Stop Loss
+                    decimal? stopLoss = null;
+                    if (cols.TryGetValue("stopLoss", out var slCol))
+                    {
+                        var v = worksheet.Cells[row, slCol].Value;
+                        if (v != null && decimal.TryParse(v.ToString(),
+                            NumberStyles.Any, CultureInfo.InvariantCulture, out var sl))
+                            stopLoss = sl;
+                    }
+
+                    // Take Profit
+                    decimal? takeProfit = null;
+                    if (cols.TryGetValue("takeProfit", out var tpCol))
+                    {
+                        var v = worksheet.Cells[row, tpCol].Value;
+                        if (v != null && decimal.TryParse(v.ToString(),
+                            NumberStyles.Any, CultureInfo.InvariantCulture, out var tp))
+                            takeProfit = tp;
+                    }
+
+                    // Exit time
+                    DateTime? exitTime = null;
+                    if (cols.TryGetValue("exitTime", out var etCol) &&
+                        TryParseExcelDateTime(worksheet.Cells[row, etCol].Value, out var et))
+                        exitTime = et;
+
+                    // Exit price
+                    decimal? exitPrice = null;
+                    if (cols.TryGetValue("exitPrice", out var epCol))
+                    {
+                        var v = worksheet.Cells[row, epCol].Value;
+                        if (v != null && decimal.TryParse(v.ToString(),
+                            NumberStyles.Any, CultureInfo.InvariantCulture, out var ep))
+                            exitPrice = ep;
+                    }
+
+                    // Commission
+                    decimal commission = 0;
+                    if (cols.TryGetValue("commission", out var commCol))
+                    {
+                        var v = worksheet.Cells[row, commCol].Value;
+                        if (v != null) decimal.TryParse(v.ToString(),
+                            NumberStyles.Any, CultureInfo.InvariantCulture, out commission);
+                    }
+
+                    // Swap
+                    decimal swap = 0;
+                    if (cols.TryGetValue("swap", out var swCol))
+                    {
+                        var v = worksheet.Cells[row, swCol].Value;
+                        if (v != null) decimal.TryParse(v.ToString(),
+                            NumberStyles.Any, CultureInfo.InvariantCulture, out swap);
+                    }
+
+                    // Profit (required)
+                    if (!cols.ContainsKey("profit") ||
+                        !decimal.TryParse(worksheet.Cells[row, cols["profit"]].Value?.ToString(),
+                            NumberStyles.Any, CultureInfo.InvariantCulture, out var profit))
+                        continue;
+
+                    if (!exitPrice.HasValue || !exitTime.HasValue)
+                        continue;
+
+                    var netPnL = profit + swap + commission;
+
+                    var trade = new Trade
+                    {
+                        UserId = userId,
+                        StrategyId = strategyId,
+                        Broker = detectedBroker,
+                        Currency = detectedCurrency,
+                        Instrument = symbol,
+                        EntryPrice = entryPrice,
+                        ExitPrice = exitPrice,
+                        StopLoss = stopLoss,
+                        TakeProfit = takeProfit,
+                        ProfitLoss = netPnL,
+                        ProfitLossDisplay = netPnL,
+                        DateTime = entryTime.ToUniversalTime(),
+                        ExitDateTime = exitTime?.ToUniversalTime(),
+                        LotSize = lotSize,
+                        Status = "Closed",
+                        Type = tradeType
+                    };
+
+                    if (await IsDuplicateTradeAsync(userId, trade))
+                        result.TradesSkipped++;
+                    else
+                    {
+                        _context.Trades.Add(trade);
+                        result.TradesImported++;
+                    }
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogWarning(ex, "Failed to parse trade at row {Row}", row);
+                    result.TradesFailed++;
+                }
+            }
+
+            _logger.LogInformation("Broker Excel import: {Imported} imported, {Skipped} skipped, {Failed} failed",
+                result.TradesImported, result.TradesSkipped, result.TradesFailed);
+        }
+
         private async Task ImportFromPdfAsync(
             Stream fileStream,
             string userId,
@@ -624,6 +1006,44 @@ namespace TradeHelper.Services
                 }
 
                 _logger.LogInformation("Extracted {Length} characters from PDF", pdfText.Length);
+
+                // Log a sample so we can debug detection issues
+                var sample = pdfText.Length > 500 ? pdfText[..500] : pdfText;
+                _logger.LogInformation("PDF text sample: {Sample}", sample.Replace("\n", "\\n").Replace("\r", "\\r"));
+
+                // Detect transaction-based PDF (DXtrade or similar platforms)
+                // Use case-insensitive regex to handle varied text extraction output
+                bool hasSettledPnlKeyword = Regex.IsMatch(pdfText,
+                    @"Settled\s*Pn\s*L|Settled\s*P\s*&\s*L|Realized\s*Pn\s*L|Realized\s*P\s*&\s*L",
+                    RegexOptions.IgnoreCase);
+                bool hasTransactionLines = Regex.IsMatch(pdfText,
+                    @"(?:\d+[:\s]\d+\s+)?\d{2}[/.\-]\d{2}[/.\-]\d{2,4}\s+\d{2}:\d{2}\s+(Buy|Sell)",
+                    RegexOptions.IgnoreCase);
+                bool hasDXtradeSignatures = Regex.IsMatch(pdfText,
+                    @"Transaction\s*(ID|Time)|Account\s*statement|Working\s*Orders|Open\s*Positions",
+                    RegexOptions.IgnoreCase);
+
+                _logger.LogInformation(
+                    "PDF detection: hasSettledPnl={PnL}, hasTransactionLines={Tx}, hasDXtradeSignatures={Sig}",
+                    hasSettledPnlKeyword, hasTransactionLines, hasDXtradeSignatures);
+
+                if ((hasSettledPnlKeyword || hasDXtradeSignatures) && hasTransactionLines)
+                {
+                    _logger.LogInformation("Detected transaction-based PDF statement (DXtrade-like)");
+                    await ImportFromDXtradePdfAsync(pdfText, userId, brokerName, currency, strategyId, result);
+                    return;
+                }
+
+                // Second chance: if we see DXtrade signatures even without matching
+                // transaction lines regex (text extraction may differ), try DXtrade parser
+                if (hasDXtradeSignatures && hasSettledPnlKeyword)
+                {
+                    _logger.LogInformation("DXtrade signatures found, attempting DXtrade parser");
+                    await ImportFromDXtradePdfAsync(pdfText, userId, brokerName, currency, strategyId, result);
+                    if (result.TradesImported > 0)
+                        return;
+                    _logger.LogWarning("DXtrade parser found no trades, falling through to AI");
+                }
 
                 // Use AI to extract closed trades from PDF text
                 List<Trade> trades;
@@ -693,29 +1113,14 @@ namespace TradeHelper.Services
                             continue;
                         }
 
-                        // Check for duplicates - use date range that EF Core can translate
-                        var oneMinuteBefore = trade.DateTime.AddMinutes(-1);
-                        var oneMinuteAfter = trade.DateTime.AddMinutes(1);
-                        var existing = await _context.Trades
-                            .FirstOrDefaultAsync(t =>
-                                t.UserId == userId &&
-                                t.Instrument == trade.Instrument &&
-                                t.EntryPrice == trade.EntryPrice &&
-                                t.DateTime >= oneMinuteBefore &&
-                                t.DateTime <= oneMinuteAfter);
-
-                        if (existing == null)
+                        if (await IsDuplicateTradeAsync(userId, trade))
                         {
-                            _context.Trades.Add(trade);
-                            result.TradesImported++;
-                            _logger.LogInformation("Adding new trade: {Instrument}, Entry: {EntryPrice}, P/L: {ProfitLoss}, Date: {DateTime}", 
-                                trade.Instrument, trade.EntryPrice, trade.ProfitLoss, trade.DateTime);
+                            result.TradesSkipped++;
                         }
                         else
                         {
-                            result.TradesSkipped++;
-                            _logger.LogWarning("Skipped duplicate trade: {Instrument}, Entry: {EntryPrice}, Date: {DateTime}, Existing ID: {ExistingId}", 
-                                trade.Instrument, trade.EntryPrice, trade.DateTime, existing.Id);
+                            _context.Trades.Add(trade);
+                            result.TradesImported++;
                         }
                     }
                     catch (Exception ex)
@@ -726,17 +1131,8 @@ namespace TradeHelper.Services
                     }
                 }
                 
-                // Save all added trades to database
-                if (result.TradesImported > 0)
-                {
-                    _logger.LogInformation("Saving {Count} new trades to database", result.TradesImported);
-                    await _context.SaveChangesAsync();
-                    _logger.LogInformation("Successfully saved {Count} trades to database", result.TradesImported);
-                }
-                else
-                {
-                    _logger.LogWarning("No new trades to save - all {Count} trades were skipped as duplicates", result.TradesSkipped);
-                }
+                _logger.LogInformation("PDF import: {Imported} imported, {Skipped} skipped, {Failed} failed",
+                    result.TradesImported, result.TradesSkipped, result.TradesFailed);
             }
             catch (Exception ex)
             {
@@ -1475,6 +1871,406 @@ namespace TradeHelper.Services
                 return null;
             }
         }
+
+        private static readonly string[] _pdfDateTimeFormats =
+        {
+            "dd/MM/yyyy HH:mm", "MM/dd/yyyy HH:mm",
+            "dd/MM/yyyy HH:mm:ss", "MM/dd/yyyy HH:mm:ss",
+            "dd.MM.yyyy HH:mm", "dd.MM.yyyy HH:mm:ss",
+            "dd-MM-yyyy HH:mm", "dd-MM-yyyy HH:mm:ss",
+            "yyyy.MM.dd HH:mm:ss", "yyyy-MM-dd HH:mm:ss",
+            "yyyy/MM/dd HH:mm:ss"
+        };
+
+        // Pattern A: DXtrade – TransactionID  Date  Time  Direction  Size  Symbol  Price  OrderID  <PnL Commission>
+        // TransactionID may have colon (6077901:641038) or space (6077901 641038) depending on PDF extractor
+        private static readonly Regex _txPatternA = new(
+            @"^(\d+[:\s]\d+)\s+(\d{2}[/.\-]\d{2}[/.\-]\d{2,4})\s+(\d{2}:\d{2}(?::\d{2})?)\s+(Buy|Sell)\s+([\d.]+)\s+([A-Za-z][A-Za-z0-9./]+)\s+([\d,]+\.?\d*)\s+(\d+)\s+(.+)$",
+            RegexOptions.Compiled | RegexOptions.IgnoreCase);
+
+        // Pattern B: No TransactionID – Date  Time  Direction  Size  Symbol  Price  <remainder>
+        private static readonly Regex _txPatternB = new(
+            @"^(\d{2}[/.\-]\d{2}[/.\-]\d{2,4})\s+(\d{2}:\d{2}(?::\d{2})?)\s+(Buy|Sell)\s+([\d.]+)\s+([A-Za-z][A-Za-z0-9./]+)\s+([\d,]+\.?\d*)\s+(.+)$",
+            RegexOptions.Compiled | RegexOptions.IgnoreCase);
+
+        private async Task ImportFromDXtradePdfAsync(
+            string pdfText,
+            string userId,
+            string? brokerName,
+            string? currency,
+            int? strategyId,
+            ImportResult result)
+        {
+            if (string.IsNullOrEmpty(currency))
+            {
+                var currencyMatch = Regex.Match(pdfText, @"Currency\s+([A-Z]{3})");
+                currency = currencyMatch.Success ? currencyMatch.Groups[1].Value : "USD";
+            }
+
+            var allLines = pdfText.Split(new[] { '\n', '\r' }, StringSplitOptions.RemoveEmptyEntries);
+
+            // ── Section filtering: only parse lines inside the "Transactions" section ──
+            var transactionLines = new List<string>();
+            bool inTransactions = false;
+            var sectionHeaders = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+            {
+                "Financing", "Deposits", "Withdrawals", "Deposits, Withdrawals & Adjustments",
+                "Working Orders", "Open Positions", "Summary", "Balance Chart", "Totals"
+            };
+
+            foreach (var raw in allLines)
+            {
+                var trimmed = raw.Trim();
+
+                // Detect Transactions section start (handle variable whitespace from PDF extractors)
+                if (!inTransactions)
+                {
+                    if (Regex.IsMatch(trimmed, @"^Transaction\s*ID", RegexOptions.IgnoreCase) ||
+                        Regex.IsMatch(trimmed, @"^Transactions\s*$", RegexOptions.IgnoreCase))
+                    {
+                        inTransactions = true;
+                        continue;
+                    }
+                    // Also enter transactions mode if we see a transaction-like line with Buy/Sell
+                    if (Regex.IsMatch(trimmed, @"\d+[:\s]\d+\s+\d{2}[/.\-]\d{2}[/.\-]\d{2,4}\s+\d{2}:\d{2}\s+(Buy|Sell)",
+                        RegexOptions.IgnoreCase))
+                    {
+                        inTransactions = true;
+                        // Don't continue - fall through to add this line
+                    }
+                    else continue;
+                }
+
+                if (sectionHeaders.Any(h => trimmed.StartsWith(h, StringComparison.OrdinalIgnoreCase)))
+                    break;
+                if (Regex.IsMatch(trimmed, @"^--\s*\d+\s+of\s+\d+\s*--$"))
+                    continue;
+                if (string.IsNullOrWhiteSpace(trimmed))
+                    continue;
+                transactionLines.Add(trimmed);
+            }
+
+            _logger.LogInformation("DXtrade: {Total} total lines, {Section} lines in Transactions section",
+                allLines.Length, transactionLines.Count);
+
+            // Log first few transaction lines for debugging
+            for (int dbg = 0; dbg < Math.Min(5, transactionLines.Count); dbg++)
+                _logger.LogInformation("DXtrade sample line [{Idx}]: {Line}", dbg, transactionLines[dbg]);
+
+            // ── Phase 1: try Pattern A (with TransactionID + OrderID) on all lines ──
+            var entries = new List<DXtradeTransaction>();
+            var exits = new List<DXtradeTransaction>();
+            int patternAMatches = 0;
+            int patternAFails = 0;
+
+            foreach (var line in transactionLines)
+            {
+                var matchA = _txPatternA.Match(line);
+                if (!matchA.Success)
+                {
+                    patternAFails++;
+                    if (patternAFails <= 3)
+                        _logger.LogWarning("DXtrade pattern A no match: {Line}", line);
+                    continue;
+                }
+                patternAMatches++;
+                try
+                {
+                    var tx = ParsePdfTxPatternA(matchA);
+                    if (tx != null)
+                        (tx.SettledPnL.HasValue ? exits : entries).Add(tx);
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogWarning(ex, "Failed to parse transaction (pattern A): {Line}", line);
+                }
+            }
+
+            _logger.LogInformation("DXtrade Pattern A results: {Matches} matched, {Fails} unmatched, {Entries} entries, {Exits} exits",
+                patternAMatches, patternAFails, entries.Count, exits.Count);
+
+            // ── Phase 2: only if Pattern A found nothing, fall back to Pattern B ──
+            if (entries.Count == 0 && exits.Count == 0)
+            {
+                _logger.LogInformation("Pattern A found no matches, falling back to Pattern B");
+                foreach (var line in transactionLines)
+                {
+                    var matchB = _txPatternB.Match(line);
+                    if (!matchB.Success) continue;
+                    try
+                    {
+                        var tx = ParsePdfTxPatternB(matchB);
+                        if (tx != null)
+                            (tx.SettledPnL.HasValue ? exits : entries).Add(tx);
+                    }
+                    catch (Exception ex)
+                    {
+                        _logger.LogWarning(ex, "Failed to parse transaction (pattern B): {Line}", line);
+                    }
+                }
+            }
+
+            // PnL sanity check: reject exits where |PnL| looks like an OrderID (> 100k)
+            var validExits = new List<DXtradeTransaction>();
+            foreach (var ex in exits)
+            {
+                if (ex.SettledPnL.HasValue && Math.Abs(ex.SettledPnL.Value) > 100_000m)
+                {
+                    _logger.LogWarning(
+                        "Discarding exit with implausible PnL {PnL} for {Symbol} (likely a misread OrderID)",
+                        ex.SettledPnL.Value, ex.Symbol);
+                    continue;
+                }
+                validExits.Add(ex);
+            }
+            exits = validExits;
+
+            _logger.LogInformation("DXtrade: parsed {Entries} entries, {Exits} exits (after validation)",
+                entries.Count, exits.Count);
+
+            // Sort entries chronologically for FIFO matching
+            entries.Sort((a, b) => a.Time.CompareTo(b.Time));
+
+            var usedEntryIndices = new HashSet<int>();
+            var unmatchedExits = new List<DXtradeTransaction>();
+
+            foreach (var exit in exits)
+            {
+                var oppositeDir = exit.Direction == "Buy" ? "Sell" : "Buy";
+                int matchedIdx = -1;
+
+                // Pass 1: exact match (symbol + size + direction + time order)
+                for (int i = 0; i < entries.Count; i++)
+                {
+                    if (usedEntryIndices.Contains(i)) continue;
+                    var entry = entries[i];
+                    if (entry.Symbol == exit.Symbol &&
+                        entry.Size == exit.Size &&
+                        entry.Direction == oppositeDir &&
+                        entry.Time <= exit.Time)
+                    {
+                        matchedIdx = i;
+                        break;
+                    }
+                }
+
+                // Pass 2: relaxed match (symbol + direction, ignore size — handles partial closes)
+                if (matchedIdx == -1)
+                {
+                    for (int i = 0; i < entries.Count; i++)
+                    {
+                        if (usedEntryIndices.Contains(i)) continue;
+                        var entry = entries[i];
+                        if (entry.Symbol == exit.Symbol &&
+                            entry.Direction == oppositeDir &&
+                            entry.Time <= exit.Time)
+                        {
+                            matchedIdx = i;
+                            break;
+                        }
+                    }
+                }
+
+                if (matchedIdx >= 0)
+                {
+                    usedEntryIndices.Add(matchedIdx);
+                    var matched = entries[matchedIdx];
+                    var tradeType = matched.Direction == "Buy" ? "Long" : "Short";
+
+                    var trade = new Trade
+                    {
+                        UserId = userId,
+                        StrategyId = strategyId,
+                        Broker = brokerName ?? "Unknown",
+                        Currency = currency,
+                        Instrument = matched.Symbol,
+                        EntryPrice = matched.Price,
+                        ExitPrice = exit.Price,
+                        ProfitLoss = exit.SettledPnL,
+                        ProfitLossDisplay = exit.SettledPnL,
+                        DateTime = matched.Time.ToUniversalTime(),
+                        ExitDateTime = exit.Time.ToUniversalTime(),
+                        LotSize = exit.Size,
+                        Status = "Closed",
+                        Type = tradeType
+                    };
+
+                    if (await IsDuplicateTradeAsync(userId, trade))
+                        result.TradesSkipped++;
+                    else
+                    {
+                        _context.Trades.Add(trade);
+                        result.TradesImported++;
+                    }
+                }
+                else
+                {
+                    unmatchedExits.Add(exit);
+                }
+            }
+
+            // Pass 3: create standalone trades for exits whose entries are outside the statement period
+            foreach (var exit in unmatchedExits)
+            {
+                var tradeType = exit.Direction == "Sell" ? "Long" : "Short";
+
+                var trade = new Trade
+                {
+                    UserId = userId,
+                    StrategyId = strategyId,
+                    Broker = brokerName ?? "Unknown",
+                    Currency = currency,
+                    Instrument = exit.Symbol,
+                    EntryPrice = exit.Price,
+                    ExitPrice = exit.Price,
+                    ProfitLoss = exit.SettledPnL,
+                    ProfitLossDisplay = exit.SettledPnL,
+                    DateTime = exit.Time.ToUniversalTime(),
+                    ExitDateTime = exit.Time.ToUniversalTime(),
+                    LotSize = exit.Size,
+                    Status = "Closed",
+                    Type = tradeType
+                };
+
+                _logger.LogInformation(
+                    "DXtrade: creating standalone trade for {Symbol} {Dir} {Size} at {Time} PnL={PnL} (entry not in statement)",
+                    exit.Symbol, exit.Direction, exit.Size, exit.Time, exit.SettledPnL);
+
+                if (await IsDuplicateTradeAsync(userId, trade))
+                    result.TradesSkipped++;
+                else
+                {
+                    _context.Trades.Add(trade);
+                    result.TradesImported++;
+                }
+            }
+
+            _logger.LogInformation("DXtrade import: {Imported} imported, {Skipped} skipped, {Unmatched} standalone (entry not in statement)",
+                result.TradesImported, result.TradesSkipped, unmatchedExits.Count);
+        }
+
+        /// <summary>
+        /// Parse a transaction line matching Pattern A (DXtrade: TxID Date Time Dir Size Symbol Price OrderID PnL Comm).
+        /// </summary>
+        private static DXtradeTransaction? ParsePdfTxPatternA(Match m)
+        {
+            var remainder = m.Groups[9].Value.Trim();
+            var parts = remainder.Split(new[] { ' ', '\t' }, StringSplitOptions.RemoveEmptyEntries);
+
+            decimal? settledPnL = null;
+            decimal? commission = null;
+
+            if (parts.Length >= 1)
+            {
+                var n = NormalizeDXtradeNumber(parts[0]);
+                if (n != null && decimal.TryParse(n, NumberStyles.Any, CultureInfo.InvariantCulture, out var pnl))
+                    settledPnL = pnl;
+            }
+            if (parts.Length >= 2)
+            {
+                var n = NormalizeDXtradeNumber(parts[1]);
+                if (n != null && decimal.TryParse(n, NumberStyles.Any, CultureInfo.InvariantCulture, out var c))
+                    commission = c;
+            }
+
+            if (!TryParsePdfDateTime(m.Groups[2].Value, m.Groups[3].Value, out var time))
+                return null;
+
+            return new DXtradeTransaction
+            {
+                TransactionId = m.Groups[1].Value,
+                Time = time,
+                Direction = m.Groups[4].Value,
+                Size = decimal.Parse(m.Groups[5].Value, CultureInfo.InvariantCulture),
+                Symbol = m.Groups[6].Value,
+                Price = decimal.Parse(m.Groups[7].Value.Replace(",", ""), CultureInfo.InvariantCulture),
+                OrderId = m.Groups[8].Value,
+                SettledPnL = settledPnL,
+                Commission = commission
+            };
+        }
+
+        /// <summary>
+        /// Parse a transaction line matching Pattern B (no TxID: Date Time Dir Size Symbol Price Remainder).
+        /// </summary>
+        private static DXtradeTransaction? ParsePdfTxPatternB(Match m)
+        {
+            var remainder = m.Groups[7].Value.Trim();
+            var parts = remainder.Split(new[] { ' ', '\t' }, StringSplitOptions.RemoveEmptyEntries);
+
+            decimal? settledPnL = null;
+            decimal? commission = null;
+
+            foreach (var part in parts)
+            {
+                var n = NormalizeDXtradeNumber(part);
+                if (n == null) continue;
+                if (!decimal.TryParse(n, NumberStyles.Any, CultureInfo.InvariantCulture, out var val))
+                    continue;
+
+                if (!settledPnL.HasValue) settledPnL = val;
+                else if (!commission.HasValue) commission = val;
+                else break;
+            }
+
+            if (!TryParsePdfDateTime(m.Groups[1].Value, m.Groups[2].Value, out var time))
+                return null;
+
+            return new DXtradeTransaction
+            {
+                TransactionId = "",
+                Time = time,
+                Direction = m.Groups[3].Value,
+                Size = decimal.Parse(m.Groups[4].Value, CultureInfo.InvariantCulture),
+                Symbol = m.Groups[5].Value,
+                Price = decimal.Parse(m.Groups[6].Value.Replace(",", ""), CultureInfo.InvariantCulture),
+                OrderId = "",
+                SettledPnL = settledPnL,
+                Commission = commission
+            };
+        }
+
+        private static bool TryParsePdfDateTime(string datePart, string timePart, out DateTime result)
+        {
+            var combined = datePart + " " + timePart;
+            return DateTime.TryParseExact(combined, _pdfDateTimeFormats,
+                       CultureInfo.InvariantCulture, DateTimeStyles.None, out result)
+                || DateTime.TryParse(combined, CultureInfo.InvariantCulture,
+                       DateTimeStyles.None, out result);
+        }
+
+        /// <summary>
+        /// Normalizes number strings from PDFs by replacing non-breaking hyphens/dashes.
+        /// Returns null for dash-only values (meaning "no value").
+        /// </summary>
+        private static string? NormalizeDXtradeNumber(string value)
+        {
+            if (string.IsNullOrWhiteSpace(value))
+                return null;
+
+            var trimmed = value.Trim();
+            if (trimmed == "\u2014" || trimmed == "\u2013" || trimmed == "-")
+                return null;
+
+            return trimmed
+                .Replace("\u2011", "-")
+                .Replace("\u2013", "-")
+                .Replace("\u2212", "-")
+                .Replace(",", "");
+        }
+
+        private class DXtradeTransaction
+        {
+            public string TransactionId { get; set; } = "";
+            public DateTime Time { get; set; }
+            public string Direction { get; set; } = "";
+            public decimal Size { get; set; }
+            public string Symbol { get; set; } = "";
+            public decimal Price { get; set; }
+            public string OrderId { get; set; } = "";
+            public decimal? SettledPnL { get; set; }
+            public decimal? Commission { get; set; }
+        }
     }
 
     public class ImportResult
@@ -1482,6 +2278,7 @@ namespace TradeHelper.Services
         public int TradesImported { get; set; }
         public int TradesSkipped { get; set; }
         public int TradesFailed { get; set; }
+        public string? DetectedCurrency { get; set; }
         public List<string> Errors { get; set; } = new();
     }
 }

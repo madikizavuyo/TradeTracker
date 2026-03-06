@@ -9,40 +9,68 @@ import { BarChartComponent } from '@/components/BarChartComponent';
 import { PerformanceChart } from '@/components/PerformanceChart';
 import { Download, TrendingUp, TrendingDown } from 'lucide-react';
 import { api } from '@/lib/api';
+import { Strategy } from '@/lib/types';
 import { formatCurrency } from '@/lib/utils';
+
+interface ReportMetrics {
+  totalTrades: number;
+  winRate: number;
+  totalProfitLoss: number;
+  totalProfitLossDisplay: number;
+  profitFactor: number;
+  averageWin: number;
+  averageWinDisplay: number;
+  averageLoss: number;
+  averageLossDisplay: number;
+  displayCurrency: string;
+  displayCurrencySymbol: string;
+  monthlyPerformance: { month: string; profitLoss: number; trades: number; wins: number }[];
+  strategyPerformance: { strategy: string; trades: number; profitLoss: number; winRate: number }[];
+  instrumentPerformance: { instrument: string; trades: number; profitLoss: number; winRate: number }[];
+}
 
 export default function Reports() {
   const [loading, setLoading] = useState(true);
   const [startDate, setStartDate] = useState('');
   const [endDate, setEndDate] = useState('');
   const [selectedStrategy, setSelectedStrategy] = useState('all');
-
-  const [reportData, setReportData] = useState({
-    totalTrades: 42,
-    winRate: 66.67,
-    totalProfitLoss: 100284.0,
-    profitFactor: 1.94,
-    averageWin: 6475.0,
-    averageLoss: -3330.0,
-    displayCurrencySymbol: 'R',
-  });
+  const [strategies, setStrategies] = useState<Strategy[]>([]);
+  const [reportData, setReportData] = useState<ReportMetrics | null>(null);
 
   useEffect(() => {
+    loadStrategies();
     loadReportData();
   }, []);
 
-  const loadReportData = async () => {
+  const loadStrategies = async () => {
     try {
-      const data = await api.getReportsData();
+      const data = await api.getStrategies();
+      setStrategies(Array.isArray(data) ? data : []);
+    } catch (error) {
+      console.error('Failed to load strategies:', error);
+    }
+  };
+
+  const loadReportData = async () => {
+    setLoading(true);
+    try {
+      const data: any = await api.getReportsData();
       if (data) {
         setReportData({
-          totalTrades: data.totalTrades,
-          winRate: data.winRate,
-          totalProfitLoss: data.totalProfitLossDisplay,
-          profitFactor: data.profitFactor,
-          averageWin: data.averageWinDisplay,
-          averageLoss: data.averageLossDisplay,
-          displayCurrencySymbol: data.displayCurrencySymbol,
+          totalTrades: data.totalTrades ?? 0,
+          winRate: data.winRate ?? 0,
+          totalProfitLoss: data.totalProfitLoss ?? 0,
+          totalProfitLossDisplay: data.totalProfitLossDisplay ?? 0,
+          profitFactor: data.profitFactor ?? 0,
+          averageWin: data.averageWin ?? 0,
+          averageWinDisplay: data.averageWinDisplay ?? 0,
+          averageLoss: data.averageLoss ?? 0,
+          averageLossDisplay: data.averageLossDisplay ?? 0,
+          displayCurrency: data.displayCurrency ?? 'USD',
+          displayCurrencySymbol: data.displayCurrencySymbol ?? '$',
+          monthlyPerformance: data.monthlyPerformance ?? [],
+          strategyPerformance: data.strategyPerformance ?? [],
+          instrumentPerformance: data.instrumentPerformance ?? [],
         });
       }
     } catch (error) {
@@ -52,12 +80,49 @@ export default function Reports() {
     }
   };
 
-  const handleGenerateReport = () => {
-    console.log('Generating report with filters:', { startDate, endDate, selectedStrategy });
-    // In real implementation, this would call the API with filters
+  const handleGenerateReport = async () => {
+    setLoading(true);
+    try {
+      const strategyId = selectedStrategy !== 'all' ? parseInt(selectedStrategy) : undefined;
+      const data: any = await api.getPerformanceReport(
+        startDate || undefined,
+        endDate || undefined,
+        strategyId
+      );
+      if (data && reportData) {
+        setReportData({
+          ...reportData,
+          totalTrades: data.totalTrades ?? reportData.totalTrades,
+          winRate: data.winRate ?? reportData.winRate,
+          totalProfitLoss: data.totalProfitLoss ?? reportData.totalProfitLoss,
+          profitFactor: data.profitFactor ?? reportData.profitFactor,
+          averageWin: data.averageWin ?? reportData.averageWin,
+          averageLoss: data.averageLoss ?? reportData.averageLoss,
+        });
+      }
+    } catch (error) {
+      console.error('Failed to generate report:', error);
+    } finally {
+      setLoading(false);
+    }
   };
 
-  if (loading) {
+  const handleExport = async () => {
+    try {
+      const strategyId = selectedStrategy !== 'all' ? parseInt(selectedStrategy) : undefined;
+      const blob = await api.exportTrades('csv', startDate || undefined, endDate || undefined, strategyId);
+      const url = window.URL.createObjectURL(new Blob([blob]));
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `trade-report-${new Date().toISOString().slice(0, 10)}.csv`;
+      a.click();
+      window.URL.revokeObjectURL(url);
+    } catch (error) {
+      console.error('Failed to export:', error);
+    }
+  };
+
+  if (loading && !reportData) {
     return (
       <AppLayout>
         <div className="flex items-center justify-center h-96">
@@ -67,25 +132,37 @@ export default function Reports() {
     );
   }
 
-  const monthlyData = [
-    { month: 'January', profitLoss: 12580.0, trades: 8 },
-    { month: 'February', profitLoss: 8420.0, trades: 6 },
-    { month: 'March', profitLoss: -3250.0, trades: 5 },
-    { month: 'April', profitLoss: 15320.0, trades: 9 },
-    { month: 'May', profitLoss: 9840.0, trades: 7 },
-    { month: 'June', profitLoss: 18650.0, trades: 7 },
-  ];
+  const sym = reportData?.displayCurrencySymbol || '$';
+  const monthly = reportData?.monthlyPerformance ?? [];
+  const stratPerf = reportData?.strategyPerformance ?? [];
+  const instrPerf = reportData?.instrumentPerformance ?? [];
+
+  const equityCurveData = (() => {
+    if (monthly.length === 0) return [{ date: 'No Data', profitLoss: 0 }];
+    let cumulative = 0;
+    return monthly.map((m) => {
+      cumulative += m.profitLoss;
+      return { date: m.month, profitLoss: cumulative };
+    });
+  })();
+
+  const strategyChartData = stratPerf.length > 0
+    ? stratPerf.map((s) => ({ name: s.strategy, value: s.profitLoss }))
+    : [{ name: 'No Data', value: 0 }];
+
+  const instrumentChartData = instrPerf.length > 0
+    ? instrPerf.map((i) => ({ name: i.instrument, value: i.profitLoss }))
+    : [{ name: 'No Data', value: 0 }];
 
   return (
     <AppLayout>
       <div className="space-y-6">
-        {/* Header */}
         <div>
           <h1 className="text-3xl font-bold tracking-tight text-primary">Reports</h1>
           <p className="text-muted-foreground">Comprehensive trading performance analytics</p>
         </div>
 
-        {/* Report Generation Controls */}
+        {/* Filters */}
         <Card>
           <CardHeader>
             <CardTitle>Generate Report</CardTitle>
@@ -119,17 +196,21 @@ export default function Reports() {
                     onChange={(e) => setSelectedStrategy(e.target.value)}
                   >
                     <option value="all">All Strategies</option>
-                    <option value="1">Trend Following</option>
-                    <option value="2">Breakout</option>
-                    <option value="3">Range Trading</option>
+                    {strategies.map((s) => (
+                      <option key={s.id} value={s.id}>
+                        {s.name}
+                      </option>
+                    ))}
                   </Select>
                 </div>
               </div>
               <div className="flex space-x-2">
-                <Button onClick={handleGenerateReport}>Generate Report</Button>
-                <Button variant="outline">
+                <Button onClick={handleGenerateReport} disabled={loading}>
+                  {loading ? 'Loading...' : 'Generate Report'}
+                </Button>
+                <Button variant="outline" onClick={handleExport}>
                   <Download className="mr-2 h-4 w-4" />
-                  Export PDF
+                  Export CSV
                 </Button>
               </div>
             </div>
@@ -142,42 +223,40 @@ export default function Reports() {
             <CardTitle>Key Performance Metrics</CardTitle>
           </CardHeader>
           <CardContent>
-            <div className="space-y-4">
-              <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
-                <div className="space-y-1">
-                  <p className="text-sm text-muted-foreground">Total Trades</p>
-                  <p className="text-2xl font-bold">{reportData.totalTrades}</p>
-                </div>
-                <div className="space-y-1">
-                  <p className="text-sm text-muted-foreground">Win Rate</p>
-                  <p className="text-2xl font-bold text-success">{reportData?.winRate ? reportData.winRate.toFixed(1) : '0.0'}%</p>
-                </div>
-                <div className="space-y-1">
-                  <p className="text-sm text-muted-foreground">Total P&L</p>
-                  <p
-                    className={`text-2xl font-bold ${
-                      reportData.totalProfitLoss >= 0 ? 'text-success' : 'text-destructive'
-                    }`}
-                  >
-                    {formatCurrency(reportData.totalProfitLoss, reportData.displayCurrencySymbol)}
-                  </p>
-                </div>
-                <div className="space-y-1">
-                  <p className="text-sm text-muted-foreground">Profit Factor</p>
-                  <p className="text-2xl font-bold">{reportData?.profitFactor ? reportData.profitFactor.toFixed(2) : '0.00'}</p>
-                </div>
-                <div className="space-y-1">
-                  <p className="text-sm text-muted-foreground">Average Win</p>
-                  <p className="text-2xl font-bold text-success">
-                    {formatCurrency(reportData.averageWin, reportData.displayCurrencySymbol)}
-                  </p>
-                </div>
-                <div className="space-y-1">
-                  <p className="text-sm text-muted-foreground">Average Loss</p>
-                  <p className="text-2xl font-bold text-destructive">
-                    {formatCurrency(reportData.averageLoss, reportData.displayCurrencySymbol)}
-                  </p>
-                </div>
+            <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
+              <div className="space-y-1">
+                <p className="text-sm text-muted-foreground">Total Trades</p>
+                <p className="text-2xl font-bold">{reportData?.totalTrades ?? 0}</p>
+              </div>
+              <div className="space-y-1">
+                <p className="text-sm text-muted-foreground">Win Rate</p>
+                <p className="text-2xl font-bold text-success">
+                  {reportData?.winRate ? reportData.winRate.toFixed(1) : '0.0'}%
+                </p>
+              </div>
+              <div className="space-y-1">
+                <p className="text-sm text-muted-foreground">Total P&L</p>
+                <p className={`text-2xl font-bold ${(reportData?.totalProfitLossDisplay ?? 0) >= 0 ? 'text-success' : 'text-destructive'}`}>
+                  {formatCurrency(reportData?.totalProfitLossDisplay ?? 0, sym)}
+                </p>
+              </div>
+              <div className="space-y-1">
+                <p className="text-sm text-muted-foreground">Profit Factor</p>
+                <p className="text-2xl font-bold">
+                  {reportData?.profitFactor ? reportData.profitFactor.toFixed(2) : '0.00'}
+                </p>
+              </div>
+              <div className="space-y-1">
+                <p className="text-sm text-muted-foreground">Average Win</p>
+                <p className="text-2xl font-bold text-success">
+                  {formatCurrency(reportData?.averageWinDisplay ?? 0, sym)}
+                </p>
+              </div>
+              <div className="space-y-1">
+                <p className="text-sm text-muted-foreground">Average Loss</p>
+                <p className="text-2xl font-bold text-destructive">
+                  {formatCurrency(reportData?.averageLossDisplay ?? 0, sym)}
+                </p>
               </div>
             </div>
           </CardContent>
@@ -190,30 +269,34 @@ export default function Reports() {
           </CardHeader>
           <CardContent>
             <div className="space-y-4">
-              {monthlyData.map((month) => (
-                <div key={month.month} className="flex items-center justify-between border-b pb-4 last:border-0">
-                  <div>
-                    <p className="font-semibold">{month.month}</p>
-                    <p className="text-sm text-muted-foreground">{month.trades} trades</p>
-                  </div>
-                  <div className="text-right">
-                    <div className="flex items-center space-x-2">
-                      {month.profitLoss >= 0 ? (
-                        <TrendingUp className="h-4 w-4 text-success" />
-                      ) : (
-                        <TrendingDown className="h-4 w-4 text-destructive" />
-                      )}
-                      <span
-                        className={`text-lg font-bold ${
-                          month.profitLoss >= 0 ? 'text-success' : 'text-destructive'
-                        }`}
-                      >
-                        {formatCurrency(month.profitLoss, reportData.displayCurrencySymbol)}
-                      </span>
+              {monthly.length > 0 ? (
+                monthly.map((m) => (
+                  <div key={m.month} className="flex items-center justify-between border-b pb-4 last:border-0">
+                    <div>
+                      <p className="font-semibold">{m.month}</p>
+                      <p className="text-sm text-muted-foreground">
+                        {m.trades} trades &middot; {m.wins} wins
+                      </p>
+                    </div>
+                    <div className="text-right">
+                      <div className="flex items-center space-x-2">
+                        {m.profitLoss >= 0 ? (
+                          <TrendingUp className="h-4 w-4 text-success" />
+                        ) : (
+                          <TrendingDown className="h-4 w-4 text-destructive" />
+                        )}
+                        <span className={`text-lg font-bold ${m.profitLoss >= 0 ? 'text-success' : 'text-destructive'}`}>
+                          {formatCurrency(m.profitLoss, sym)}
+                        </span>
+                      </div>
                     </div>
                   </div>
+                ))
+              ) : (
+                <div className="text-center text-muted-foreground py-8">
+                  No monthly data available
                 </div>
-              ))}
+              )}
             </div>
           </CardContent>
         </Card>
@@ -226,17 +309,7 @@ export default function Reports() {
             </CardHeader>
             <CardContent>
               <div className="h-64">
-                <PerformanceChart
-                  data={[
-                    { date: 'Jan', profitLoss: 0 },
-                    { date: 'Feb', profitLoss: 21275 },
-                    { date: 'Mar', profitLoss: 37400 },
-                    { date: 'Apr', profitLoss: 61925 },
-                    { date: 'May', profitLoss: 80775 },
-                    { date: 'Jun', profitLoss: 100284 },
-                  ]}
-                  currencySymbol={reportData.displayCurrencySymbol}
-                />
+                <PerformanceChart data={equityCurveData} currencySymbol={sym} />
               </div>
             </CardContent>
           </Card>
@@ -247,20 +320,23 @@ export default function Reports() {
             </CardHeader>
             <CardContent>
               <div className="h-64">
-                <BarChartComponent
-                  data={[
-                    { name: 'Trend', value: 38850 },
-                    { name: 'Breakout', value: 25125 },
-                    { name: 'Range', value: 31559 },
-                    { name: 'Momentum', value: 4750 },
-                  ]}
-                  currencySymbol={reportData.displayCurrencySymbol}
-                  title="Strategy P&L"
-                />
+                <BarChartComponent data={strategyChartData} currencySymbol={sym} title="Strategy P&L" />
               </div>
             </CardContent>
           </Card>
         </div>
+
+        {/* Instrument Performance */}
+        <Card>
+          <CardHeader>
+            <CardTitle>Instrument Performance</CardTitle>
+          </CardHeader>
+          <CardContent>
+            <div className="h-64">
+              <BarChartComponent data={instrumentChartData} currencySymbol={sym} title="Instrument P&L" />
+            </div>
+          </CardContent>
+        </Card>
 
         {/* Trading Insights */}
         <Card>
@@ -269,26 +345,45 @@ export default function Reports() {
           </CardHeader>
           <CardContent>
             <div className="space-y-4">
-              <div className="rounded-lg bg-success/10 p-4 border border-success/20">
-                <p className="font-semibold text-success mb-2">Strength: Consistent Win Rate</p>
-                <p className="text-sm text-muted-foreground">
-                  Your win rate of {reportData?.winRate ? reportData.winRate.toFixed(1) : '0.0'}% is above average. Continue focusing on
-                  high-probability setups.
-                </p>
-              </div>
-              <div className="rounded-lg bg-blue-500/10 p-4 border border-blue-500/20">
-                <p className="font-semibold text-blue-600 mb-2">Observation: Best Performing Strategy</p>
-                <p className="text-sm text-muted-foreground">
-                  Trend Following strategy shows the highest profit factor. Consider allocating more capital to this
-                  approach.
-                </p>
-              </div>
-              <div className="rounded-lg bg-yellow-500/10 p-4 border border-yellow-500/20">
-                <p className="font-semibold text-yellow-600 mb-2">Recommendation: Risk Management</p>
-                <p className="text-sm text-muted-foreground">
-                  Average loss is manageable, but consider tightening stop losses on momentum trades to improve risk-reward ratio.
-                </p>
-              </div>
+              {(reportData?.winRate ?? 0) > 0 && (
+                <div className={`rounded-lg p-4 border ${(reportData?.winRate ?? 0) >= 50 ? 'bg-success/10 border-success/20' : 'bg-destructive/10 border-destructive/20'}`}>
+                  <p className={`font-semibold mb-2 ${(reportData?.winRate ?? 0) >= 50 ? 'text-success' : 'text-destructive'}`}>
+                    Win Rate: {reportData?.winRate?.toFixed(1)}%
+                  </p>
+                  <p className="text-sm text-muted-foreground">
+                    {(reportData?.winRate ?? 0) >= 50
+                      ? 'Your win rate is above average. Continue focusing on high-probability setups.'
+                      : 'Your win rate is below 50%. Consider reviewing entry criteria and risk management.'}
+                  </p>
+                </div>
+              )}
+              {stratPerf.length > 0 && (
+                <div className="rounded-lg bg-blue-500/10 p-4 border border-blue-500/20">
+                  <p className="font-semibold text-blue-600 mb-2">
+                    Best Strategy: {stratPerf.sort((a, b) => b.profitLoss - a.profitLoss)[0]?.strategy}
+                  </p>
+                  <p className="text-sm text-muted-foreground">
+                    {formatCurrency(stratPerf.sort((a, b) => b.profitLoss - a.profitLoss)[0]?.profitLoss ?? 0, sym)} total P&L
+                    with {stratPerf.sort((a, b) => b.profitLoss - a.profitLoss)[0]?.winRate?.toFixed(0)}% win rate.
+                  </p>
+                </div>
+              )}
+              {instrPerf.length > 0 && (
+                <div className="rounded-lg bg-yellow-500/10 p-4 border border-yellow-500/20">
+                  <p className="font-semibold text-yellow-600 mb-2">
+                    Top Instrument: {instrPerf.sort((a, b) => b.profitLoss - a.profitLoss)[0]?.instrument}
+                  </p>
+                  <p className="text-sm text-muted-foreground">
+                    {formatCurrency(instrPerf.sort((a, b) => b.profitLoss - a.profitLoss)[0]?.profitLoss ?? 0, sym)} total P&L
+                    across {instrPerf.sort((a, b) => b.profitLoss - a.profitLoss)[0]?.trades} trades.
+                  </p>
+                </div>
+              )}
+              {(reportData?.totalTrades ?? 0) === 0 && (
+                <div className="text-center text-muted-foreground py-4">
+                  Import trades to see insights here.
+                </div>
+              )}
             </div>
           </CardContent>
         </Card>
@@ -296,4 +391,3 @@ export default function Reports() {
     </AppLayout>
   );
 }
-

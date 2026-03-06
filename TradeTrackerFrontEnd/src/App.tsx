@@ -1,4 +1,4 @@
-import { BrowserRouter as Router, Routes, Route, Navigate } from 'react-router-dom';
+import { createBrowserRouter, RouterProvider, Outlet, Navigate } from 'react-router-dom';
 import { AuthProvider } from './lib/AuthContext';
 import { ProtectedRoute } from './components/ProtectedRoute';
 import Index from './pages/Index';
@@ -12,125 +12,141 @@ import Strategies from './pages/Strategies';
 import Reports from './pages/Reports';
 import Settings from './pages/Settings';
 import Import from './pages/Import';
-import MT5Integration from './pages/MT5Integration';
-import MLTrading from './pages/MLTrading';
 import AIInsights from './pages/AIInsights';
+import TrailBlazer from './pages/TrailBlazer';
+import TrailBlazerLayout from './pages/TrailBlazerLayout';
+import { TrailBlazerRefreshProvider } from './contexts/TrailBlazerRefreshContext';
+import TrailBlazerScanner from './pages/TrailBlazerScanner';
+import TrailBlazerStrength from './pages/TrailBlazerStrength';
+import TrailBlazerNewsSentiment from './pages/TrailBlazerNewsSentiment';
+
+const router = createBrowserRouter(
+  [
+    {
+      element: (
+        <AuthProvider>
+          <Outlet />
+        </AuthProvider>
+      ),
+      children: [
+        { path: '/', element: <Index /> },
+        { path: '/login', element: <Login /> },
+        { path: '/register', element: <Register /> },
+        {
+          path: '/dashboard',
+          element: (
+            <ProtectedRoute>
+              <Dashboard />
+            </ProtectedRoute>
+          ),
+        },
+        {
+          path: '/trades',
+          element: (
+            <ProtectedRoute>
+              <Trades />
+            </ProtectedRoute>
+          ),
+        },
+        {
+          path: '/trades/new',
+          element: (
+            <ProtectedRoute>
+              <TradeForm />
+            </ProtectedRoute>
+          ),
+        },
+        {
+          path: '/trades/:id',
+          element: (
+            <ProtectedRoute>
+              <TradeDetails />
+            </ProtectedRoute>
+          ),
+        },
+        {
+          path: '/trades/:id/edit',
+          element: (
+            <ProtectedRoute>
+              <TradeForm />
+            </ProtectedRoute>
+          ),
+        },
+        {
+          path: '/strategies',
+          element: (
+            <ProtectedRoute>
+              <Strategies />
+            </ProtectedRoute>
+          ),
+        },
+        {
+          path: '/reports',
+          element: (
+            <ProtectedRoute>
+              <Reports />
+            </ProtectedRoute>
+          ),
+        },
+        {
+          path: '/settings',
+          element: (
+            <ProtectedRoute>
+              <Settings />
+            </ProtectedRoute>
+          ),
+        },
+        {
+          path: '/import',
+          element: (
+            <ProtectedRoute>
+              <Import />
+            </ProtectedRoute>
+          ),
+        },
+        {
+          path: '/trailblazer',
+          element: (
+            <ProtectedRoute>
+              <TrailBlazerRefreshProvider>
+                <TrailBlazerLayout />
+              </TrailBlazerRefreshProvider>
+            </ProtectedRoute>
+          ),
+          children: [
+            { index: true, element: <TrailBlazer /> },
+            { path: 'scanner', element: <TrailBlazerScanner /> },
+            { path: 'strength', element: <TrailBlazerStrength /> },
+            { path: 'news-sentiment', element: <TrailBlazerNewsSentiment /> },
+          ],
+        },
+        {
+          path: '/ai-insights',
+          element: (
+            <ProtectedRoute>
+              <AIInsights />
+            </ProtectedRoute>
+          ),
+        },
+        { path: '*', element: <Navigate to="/" replace /> },
+      ],
+    },
+  ],
+  {
+    future: {
+      v7_relativeSplatPath: true,
+      v7_startTransition: true,
+    },
+  }
+);
 
 function App() {
   return (
-    <Router>
-      <AuthProvider>
-        <Routes>
-          {/* Public Routes */}
-          <Route path="/" element={<Index />} />
-          <Route path="/login" element={<Login />} />
-          <Route path="/register" element={<Register />} />
-
-          {/* Protected Routes */}
-          <Route
-            path="/dashboard"
-            element={
-              <ProtectedRoute>
-                <Dashboard />
-              </ProtectedRoute>
-            }
-          />
-          <Route
-            path="/trades"
-            element={
-              <ProtectedRoute>
-                <Trades />
-              </ProtectedRoute>
-            }
-          />
-          <Route
-            path="/trades/new"
-            element={
-              <ProtectedRoute>
-                <TradeForm />
-              </ProtectedRoute>
-            }
-          />
-          <Route
-            path="/trades/:id"
-            element={
-              <ProtectedRoute>
-                <TradeDetails />
-              </ProtectedRoute>
-            }
-          />
-          <Route
-            path="/trades/:id/edit"
-            element={
-              <ProtectedRoute>
-                <TradeForm />
-              </ProtectedRoute>
-            }
-          />
-          <Route
-            path="/strategies"
-            element={
-              <ProtectedRoute>
-                <Strategies />
-              </ProtectedRoute>
-            }
-          />
-          <Route
-            path="/reports"
-            element={
-              <ProtectedRoute>
-                <Reports />
-              </ProtectedRoute>
-            }
-          />
-          <Route
-            path="/settings"
-            element={
-              <ProtectedRoute>
-                <Settings />
-              </ProtectedRoute>
-            }
-          />
-          <Route
-            path="/import"
-            element={
-              <ProtectedRoute>
-                <Import />
-              </ProtectedRoute>
-            }
-          />
-          <Route
-            path="/mt5"
-            element={
-              <ProtectedRoute>
-                <MT5Integration />
-              </ProtectedRoute>
-            }
-          />
-          <Route
-            path="/ml-trading"
-            element={
-              <ProtectedRoute>
-                <MLTrading />
-              </ProtectedRoute>
-            }
-          />
-          <Route
-            path="/ai-insights"
-            element={
-              <ProtectedRoute>
-                <AIInsights />
-              </ProtectedRoute>
-            }
-          />
-
-          {/* Fallback */}
-          <Route path="*" element={<Navigate to="/" replace />} />
-        </Routes>
-      </AuthProvider>
-    </Router>
+    <RouterProvider
+      router={router}
+      future={{ v7_startTransition: true }}
+    />
   );
 }
 
 export default App;
-

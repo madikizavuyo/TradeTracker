@@ -1,4 +1,4 @@
-import { useEffect, useState, useCallback } from 'react';
+import { useEffect, useState, useCallback, useRef } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { AppLayout } from '@/components/AppLayout';
 import { Card, CardContent } from '@/components/ui/card';
@@ -16,8 +16,13 @@ export default function Trades() {
   const navigate = useNavigate();
   const [trades, setTrades] = useState<Trade[]>([]);
   const [loading, setLoading] = useState(true);
+  const [initialLoad, setInitialLoad] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [searchInput, setSearchInput] = useState('');
   const [searchTerm, setSearchTerm] = useState('');
+  const [instrumentInput, setInstrumentInput] = useState('');
+  const searchDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const instrumentDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [statusFilter, setStatusFilter] = useState('all');
   const [instrumentFilter, setInstrumentFilter] = useState('');
   const [startDate, setStartDate] = useState('');
@@ -30,11 +35,41 @@ export default function Trades() {
   const [pageSize, setPageSize] = useState(50);
   const [totalCount, setTotalCount] = useState(0);
   const [totalPages, setTotalPages] = useState(0);
+  const [displayCurrencySymbol, setDisplayCurrencySymbol] = useState('$');
+
+  useEffect(() => {
+    api.getSettings().then((s: any) => {
+      if (s?.displayCurrencySymbol) setDisplayCurrencySymbol(s.displayCurrencySymbol);
+    }).catch(() => {});
+  }, []);
+
+  // Debounce search input (300ms) to avoid API call on every keystroke
+  useEffect(() => {
+    if (searchDebounceRef.current) clearTimeout(searchDebounceRef.current);
+    searchDebounceRef.current = setTimeout(() => {
+      setSearchTerm(searchInput);
+      setCurrentPage(1);
+      searchDebounceRef.current = null;
+    }, 300);
+    return () => {
+      if (searchDebounceRef.current) clearTimeout(searchDebounceRef.current);
+    };
+  }, [searchInput]);
+
+  // Debounce instrument filter (300ms)
+  useEffect(() => {
+    if (instrumentDebounceRef.current) clearTimeout(instrumentDebounceRef.current);
+    instrumentDebounceRef.current = setTimeout(() => {
+      setInstrumentFilter(instrumentInput);
+      setCurrentPage(1);
+      instrumentDebounceRef.current = null;
+    }, 300);
+    return () => {
+      if (instrumentDebounceRef.current) clearTimeout(instrumentDebounceRef.current);
+    };
+  }, [instrumentInput]);
 
   const loadTrades = useCallback(async () => {
-    // #region agent log
-    fetch('http://127.0.0.1:7242/ingest/1fee1a4b-310a-4c60-9f48-bebb8e3622bd',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'Trades.tsx:38',message:'loadTrades entry',data:{currentPage,pageSize,filters:{pageNumber:currentPage,pageSize,search:searchTerm||undefined,status:statusFilter!=='all'?statusFilter:undefined}},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'H5,H8'})}).catch(()=>{});
-    // #endregion
     try {
       setLoading(true);
       const filters = {
@@ -50,25 +85,14 @@ export default function Trades() {
       };
 
       const response = await api.getTrades(filters);
-      // #region agent log
-      fetch('http://127.0.0.1:7242/ingest/1fee1a4b-310a-4c60-9f48-bebb8e3622bd',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'Trades.tsx:53',message:'API response received',data:{hasItems:!!response.items,hasTrades:!!response.trades,itemsLength:response.items?.length||0,tradesLength:response.trades?.length||0,hasTotalCount:!!response.totalCount,totalCount:response.totalCount,hasTotalPages:!!response.totalPages,totalPages:response.totalPages,responseKeys:Object.keys(response||{})},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'H6'})}).catch(()=>{});
-      // #endregion
-      
-      // Response is already normalized by getTrades method
       const tradesArray = response.items || response.trades || [];
       const totalCountValue = response.totalCount || tradesArray.length;
       const totalPagesValue = response.totalPages || Math.ceil(totalCountValue / pageSize);
-      // #region agent log
-      fetch('http://127.0.0.1:7242/ingest/1fee1a4b-310a-4c60-9f48-bebb8e3622bd',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'Trades.tsx:58',message:'Before setState',data:{tradesArrayLength:tradesArray.length,totalCountValue,totalPagesValue,pageSize,calculation:Math.ceil(totalCountValue/pageSize)},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'H6,H7'})}).catch(()=>{});
-      // #endregion
       setTrades(tradesArray);
       setTotalCount(totalCountValue);
       setTotalPages(totalPagesValue);
       setError(null);
     } catch (error: any) {
-      // #region agent log
-      fetch('http://127.0.0.1:7242/ingest/1fee1a4b-310a-4c60-9f48-bebb8e3622bd',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'Trades.tsx:60',message:'Error in loadTrades',data:{errorMessage:error?.response?.data?.message||error?.message||String(error),errorType:error?.constructor?.name,statusCode:error?.response?.status},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'H6'})}).catch(()=>{});
-      // #endregion
       console.error('Failed to load trades:', error);
       const errorMessage = error.response?.data?.message || 
                           error.message || 
@@ -76,19 +100,18 @@ export default function Trades() {
       setError(errorMessage);
     } finally {
       setLoading(false);
+      setInitialLoad(false);
     }
   }, [currentPage, pageSize, statusFilter, searchTerm, instrumentFilter, startDate, endDate, sortBy, sortOrder]);
 
   useEffect(() => {
-    // #region agent log
-    fetch('http://127.0.0.1:7242/ingest/1fee1a4b-310a-4c60-9f48-bebb8e3622bd',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'Trades.tsx:34',message:'useEffect triggered',data:{currentPage,pageSize,statusFilter,searchTerm,instrumentFilter,startDate,endDate,sortBy,sortOrder},timestamp:Date.now(),sessionId:'debug-session',runId:'post-fix',hypothesisId:'H5,H8'})}).catch(()=>{});
-    // #endregion
     loadTrades();
   }, [loadTrades]);
 
   const handleFilterReset = () => {
+    setSearchInput('');
     setSearchTerm('');
-    setStatusFilter('all');
+    setInstrumentInput('');
     setInstrumentFilter('');
     setStartDate('');
     setEndDate('');
@@ -97,7 +120,7 @@ export default function Trades() {
     setCurrentPage(1);
   };
 
-  if (loading) {
+  if (initialLoad && loading) {
     return (
       <AppLayout>
         <div className="flex items-center justify-center h-96">
@@ -107,7 +130,7 @@ export default function Trades() {
     );
   }
 
-  if (error) {
+  if (error && initialLoad) {
     return (
       <AppLayout>
         <div className="flex items-center justify-center h-96">
@@ -137,6 +160,16 @@ export default function Trades() {
           </Link>
         </div>
 
+        {/* Error banner (when not initial load) */}
+        {error && !initialLoad && (
+          <Card className="border-destructive">
+            <CardContent className="py-4 flex items-center justify-between">
+              <p className="text-destructive text-sm">{error}</p>
+              <Button variant="outline" size="sm" onClick={loadTrades}>Retry</Button>
+            </CardContent>
+          </Card>
+        )}
+
         {/* Search and Filters */}
         <Card>
           <CardContent className="pt-6 space-y-4">
@@ -145,8 +178,8 @@ export default function Trades() {
                 <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
                 <Input
                   placeholder="Search by symbol or notes..."
-                  value={searchTerm}
-                  onChange={(e) => setSearchTerm(e.target.value)}
+                  value={searchInput}
+                  onChange={(e) => setSearchInput(e.target.value)}
                   className="pl-9"
                 />
               </div>
@@ -160,15 +193,15 @@ export default function Trades() {
                 <option value="Closed">Closed</option>
                 <option value="Cancelled">Cancelled</option>
               </Select>
-              <Select
-                value={sortBy}
-                onChange={(e) => setSortBy(e.target.value)}
-                className="w-40"
-              >
-                <option value="date">Sort by Date</option>
-                <option value="instrument">Sort by Instrument</option>
-                <option value="profit">Sort by Profit</option>
-              </Select>
+                <Select
+                  value={sortBy}
+                  onChange={(e) => setSortBy(e.target.value)}
+                  className="w-40"
+                >
+                  <option value="date">Sort by Date</option>
+                  <option value="instrument">Sort by Instrument</option>
+                  <option value="profitloss">Sort by Profit</option>
+                </Select>
             </div>
 
             <div className="grid gap-4 md:grid-cols-4">
@@ -176,8 +209,8 @@ export default function Trades() {
                 <label className="text-sm font-medium">Instrument</label>
                 <Input
                   placeholder="e.g. EURUSD"
-                  value={instrumentFilter}
-                  onChange={(e) => setInstrumentFilter(e.target.value)}
+                  value={instrumentInput}
+                  onChange={(e) => setInstrumentInput(e.target.value)}
                 />
               </div>
               <div className="space-y-2">
@@ -203,8 +236,9 @@ export default function Trades() {
               </div>
             </div>
 
-            <div className="text-sm text-muted-foreground">
+            <div className="text-sm text-muted-foreground flex items-center gap-2">
               Showing {trades.length} of {totalCount} trades
+              {loading && <span className="inline-block h-3 w-3 animate-spin rounded-full border-2 border-primary border-t-transparent" />}
             </div>
           </CardContent>
         </Card>
@@ -212,7 +246,7 @@ export default function Trades() {
         {/* Trades Grid */}
         {trades.length > 0 ? (
           <>
-            <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
+            <div className={`grid gap-4 md:grid-cols-2 lg:grid-cols-3 transition-opacity duration-200 ${loading ? 'opacity-60 pointer-events-none' : 'opacity-100'}`}>
               {trades.map((trade) => (
               <Card
                 key={trade.id}
@@ -259,7 +293,7 @@ export default function Trades() {
                       <div className="flex items-center justify-between">
                         <span className="text-sm text-muted-foreground">P&L</span>
                         <span className={`text-lg font-bold ${(trade.profitLossDisplay || 0) >= 0 ? 'text-success' : 'text-destructive'}`}>
-                          {formatCurrency(trade.profitLossDisplay || 0, trade.displayCurrencySymbol || '$')}
+                          {formatCurrency(trade.profitLossDisplay || 0, trade.displayCurrencySymbol || displayCurrencySymbol)}
                         </span>
                       </div>
                     </div>

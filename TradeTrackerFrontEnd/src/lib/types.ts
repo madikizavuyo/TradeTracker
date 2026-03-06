@@ -143,6 +143,82 @@ export interface PredictionHistory {
   score: number;
 }
 
+// TrailBlazer types
+export interface TrailBlazerScore {
+  id: number;
+  instrumentId: number;
+  instrumentName: string;
+  assetClass: string;
+  overallScore: number;
+  bias: 'Bullish' | 'Bearish' | 'Neutral';
+  fundamentalScore: number;
+  sentimentScore: number;
+  technicalScore: number;
+  cotScore: number;
+  retailSentimentScore: number;
+  newsSentimentScore: number;
+  economicScore: number;
+  dataSources?: string | null;
+  dateComputed: string;
+}
+
+export interface TrailBlazerTopSetups {
+  bullish: TrailBlazerScore[];
+  bearish: TrailBlazerScore[];
+}
+
+export interface HeatmapEntry {
+  currency: string;
+  indicator: string;
+  value: number;
+  previousValue: number;
+  impact: 'Positive' | 'Negative' | 'Neutral';
+  dateCollected: string;
+}
+
+export interface COTData {
+  symbol: string;
+  commercialLong: number;
+  commercialShort: number;
+  nonCommercialLong: number;
+  nonCommercialShort: number;
+  openInterest: number;
+  netNonCommercial: number;
+  reportDate: string;
+}
+
+export interface SentimentData {
+  symbol: string;
+  retailSentimentScore: number;
+  longPct: number;
+  shortPct: number;
+}
+
+export interface ScoreHistoryEntry {
+  overallScore: number;
+  bias: string;
+  fundamentalScore: number;
+  sentimentScore: number;
+  technicalScore: number;
+  dateComputed: string;
+}
+
+export interface TrailBlazerNewsItem {
+  headline: string;
+  summary: string;
+  source: string;
+  url: string;
+  imageUrl: string;
+  publishedAt: string;
+}
+
+export interface TrailBlazerOutlookItem {
+  title: string;
+  url: string;
+  description: string;
+  source: string;
+}
+
 // Email types
 export interface EmailResponse {
   message: string;

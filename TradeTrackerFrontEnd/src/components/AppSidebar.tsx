@@ -1,5 +1,5 @@
 import { Link, useLocation, useNavigate } from 'react-router-dom';
-import { Home, TrendingUp, Target, FileText, LogOut, User, Settings, Upload, Activity, Brain } from 'lucide-react';
+import { Home, TrendingUp, Target, FileText, LogOut, User, Settings, Upload, Crosshair, Brain } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { cn } from '@/lib/utils';
 import { useAuth } from '@/lib/AuthContext';
@@ -10,8 +10,7 @@ const navigation = [
   { name: 'Strategies', href: '/strategies', icon: Target },
   { name: 'Reports', href: '/reports', icon: FileText },
   { name: 'Import', href: '/import', icon: Upload },
-  { name: 'MT5 Integration', href: '/mt5', icon: Activity },
-  { name: 'AI Extraction', href: '/ml-trading', icon: Brain },
+  { name: 'TrailBlazer', href: '/trailblazer', icon: Crosshair },
   { name: 'AI Insights', href: '/ai-insights', icon: Brain },
   { name: 'Settings', href: '/settings', icon: Settings },
 ];

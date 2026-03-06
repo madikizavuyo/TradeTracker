@@ -115,6 +115,24 @@ namespace TradeHelper.Controllers
             });
         }
 
+        [HttpPost("refresh")]
+        [Authorize]
+        public async Task<IActionResult> Refresh()
+        {
+            var userId = User.FindFirstValue(ClaimTypes.NameIdentifier);
+            if (string.IsNullOrEmpty(userId))
+                return Unauthorized();
+
+            var user = await _userManager.FindByIdAsync(userId);
+            if (user == null)
+                return Unauthorized();
+
+            var roles = await _userManager.GetRolesAsync(user);
+            var token = GenerateJwtToken(user, roles);
+
+            return Ok(new { token, expiresIn = 3600 });
+        }
+
         [HttpPost("create-admin")]
         public async Task<IActionResult> CreateAdmin()
         {

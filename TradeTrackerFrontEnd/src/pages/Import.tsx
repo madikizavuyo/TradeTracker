@@ -29,7 +29,7 @@ export default function Import() {
   const [uploading, setUploading] = useState(false);
   const [message, setMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
   const [brokerName, setBrokerName] = useState('');
-  const [currency, setCurrency] = useState('USD');
+  const [currency, setCurrency] = useState('');
   const [selectedStrategy, setSelectedStrategy] = useState<number | undefined>(undefined);
   const [strategies, setStrategies] = useState<Strategy[]>([]);
 
@@ -100,9 +100,10 @@ export default function Import() {
           text: response.message || `PDF file "${file.name}" uploaded successfully! Note: Automatic trade extraction from PDFs requires AI processing.`
         });
       } else if (response?.tradesImported !== undefined) {
+        const currencyNote = response.detectedCurrency ? ` (Currency: ${response.detectedCurrency})` : '';
         setMessage({
           type: 'success',
-          text: response.message || `File "${file.name}" uploaded successfully! ${response.tradesImported} trades imported, ${response.tradesSkipped || 0} skipped.`
+          text: (response.message || `File "${file.name}" uploaded successfully! ${response.tradesImported} trades imported, ${response.tradesSkipped || 0} skipped.`) + currencyNote
         });
       } else {
         setMessage({
@@ -113,7 +114,7 @@ export default function Import() {
       
       setFile(null);
       setBrokerName('');
-      setCurrency('USD');
+      setCurrency('');
       setSelectedStrategy(undefined);
       
       // Reload history after successful upload
@@ -255,6 +256,7 @@ export default function Import() {
                   value={currency}
                   onChange={(e) => setCurrency(e.target.value)}
                 >
+                  <option value="">Auto-detect from file</option>
                   <option value="USD">USD - US Dollar</option>
                   <option value="EUR">EUR - Euro</option>
                   <option value="GBP">GBP - British Pound</option>
@@ -263,6 +265,7 @@ export default function Import() {
                   <option value="AUD">AUD - Australian Dollar</option>
                   <option value="CAD">CAD - Canadian Dollar</option>
                   <option value="CHF">CHF - Swiss Franc</option>
+                  <option value="CNY">CNY - Chinese Yuan</option>
                 </Select>
               </div>
               <div className="space-y-2">

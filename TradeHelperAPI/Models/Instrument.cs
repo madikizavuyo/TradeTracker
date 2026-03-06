@@ -1,4 +1,3 @@
-// Instrument.cs – Represents a currency or commodity
 namespace TradeHelper.Models
 {
     public class Instrument
@@ -6,5 +5,6 @@ namespace TradeHelper.Models
         public int Id { get; set; }
         public required string Name { get; set; }
         public required string Type { get; set; } // "Currency" or "Commodity"
+        public string? AssetClass { get; set; } // "ForexMajor", "ForexMinor", "Index", "Commodity", "Metal", "Bond"
     }
 }

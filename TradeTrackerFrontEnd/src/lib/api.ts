@@ -1,5 +1,5 @@
 import axios, { AxiosInstance } from 'axios';
-import { Trade, Strategy, DashboardData, TradeFilters, LoginResponse, AuthCheckResponse, PredictionHistory, EmailResponse } from './types';
+import { Trade, Strategy, DashboardData, TradeFilters, LoginResponse, AuthCheckResponse, PredictionHistory, EmailResponse, TrailBlazerNewsItem, TrailBlazerOutlookItem } from './types';
 
 const API_BASE_URL = (import.meta as any).env?.VITE_API_BASE_URL || 'http://localhost:5235/api';
 
@@ -40,9 +40,12 @@ class ApiService {
           originalRequest._retry = true;
 
           try {
-            // Try to refresh token (if refresh endpoint exists)
-            // Note: TradeHelper API may not have refresh endpoint
-            const { data } = await axios.post(`${API_BASE_URL}/auth/refresh`).catch(() => ({ data: null }));
+            const token = localStorage.getItem('token');
+            const { data } = await axios.post(
+              `${API_BASE_URL}/auth/refresh`,
+              {},
+              { headers: token ? { Authorization: `Bearer ${token}` } : {} }
+            ).catch(() => ({ data: null }));
             const newToken = data?.data?.token || data?.token;
 
             if (newToken) {
@@ -114,7 +117,7 @@ class ApiService {
   }
 
   async refreshToken() {
-    const response = await this.client.post('/Auth/refresh');
+    const response = await this.client.post('/auth/refresh');
     return this.extractData(response);
   }
 
@@ -315,79 +318,6 @@ class ApiService {
     return this.extractData(response);
   }
 
-  // MetaTrader5
-  async getMT5History() {
-    const response = await this.client.get('/MetaTrader5/history');
-    return this.extractData(response);
-  }
-
-  async testMT5Connection(accountNumber: string, password: string, server: string) {
-    const response = await this.client.post('/MetaTrader5/connect', {
-      accountNumber,
-      password,
-      server,
-    });
-    return this.extractData(response);
-  }
-
-  async importFromMT5(accountNumber: string, password: string, server: string, fromDate: string, toDate: string) {
-    const response = await this.client.post('/MetaTrader5/import', {
-      accountNumber,
-      password,
-      server,
-      fromDate,
-      toDate,
-    });
-    return this.extractData(response);
-  }
-
-  async uploadMT5File(file: File, currency: string, strategyId?: number, useAIProcessing?: boolean) {
-    const formData = new FormData();
-    formData.append('file', file);
-    formData.append('currency', currency);
-    if (strategyId) formData.append('strategyId', String(strategyId));
-    if (useAIProcessing !== undefined) formData.append('useAIProcessing', String(useAIProcessing));
-
-    const response = await this.client.post('/MetaTrader5/upload', formData, {
-      headers: { 'Content-Type': 'multipart/form-data' },
-    });
-    return this.extractData(response);
-  }
-
-  async getMT5AccountInfo(accountNumber: string, server: string) {
-    const response = await this.client.get('/MetaTrader5/account-info', {
-      params: { accountNumber, server }
-    });
-    return this.extractData(response);
-  }
-
-  async clearMT5Data() {
-    return this.client.delete('/MetaTrader5/clear-data');
-  }
-
-  // ML Trading
-  async getMLHistory() {
-    const response = await this.client.get('/MLTrading/history');
-    return this.extractData(response);
-  }
-
-  async uploadMLFile(file: File, currency: string, selectedStrategyId?: number) {
-    const formData = new FormData();
-    formData.append('file', file);
-    formData.append('currency', currency);
-    if (selectedStrategyId) formData.append('selectedStrategyId', String(selectedStrategyId));
-
-    const response = await this.client.post('/MLTrading/upload', formData, {
-      headers: { 'Content-Type': 'multipart/form-data' },
-    });
-    return this.extractData(response);
-  }
-
-  async getMLStrategies() {
-    const response = await this.client.get('/MLTrading/strategies');
-    return this.extractData(response);
-  }
-
   // AI Insights
   async getAIInsights(startDate?: string, endDate?: string, strategyId?: number) {
     const params = new URLSearchParams();
@@ -427,6 +357,92 @@ class ApiService {
   async runPrediction(): Promise<string> {
     const response = await this.client.post('/predict/run');
     return response.data as string;
+  }
+
+  // TrailBlazer
+  async getTrailBlazerScores() {
+    const response = await this.client.get('/TrailBlazer/scores');
+    return response.data;
+  }
+
+  async getTrailBlazerDetail(instrumentId: number) {
+    const response = await this.client.get(`/TrailBlazer/scores/${instrumentId}`);
+    return response.data;
+  }
+
+  async getTrailBlazerHistory(instrumentId: number) {
+    const response = await this.client.get(`/TrailBlazer/scores/history/${instrumentId}`);
+    return response.data;
+  }
+
+  async getTrailBlazerHeatmap() {
+    const response = await this.client.get('/TrailBlazer/heatmap');
+    return response.data;
+  }
+
+  async getTrailBlazerCOT() {
+    const response = await this.client.get('/TrailBlazer/cot');
+    return response.data;
+  }
+
+  /** Scrape COT from CFTC and overwrite database. Sole source: cftc.gov/dea/options/financial_lof.htm */
+  async scrapeTrailBlazerCOT() {
+    const response = await this.client.get('/TrailBlazer/cot/scrape');
+    return response.data;
+  }
+
+  async getTrailBlazerSentiment() {
+    const response = await this.client.get('/TrailBlazer/sentiment');
+    return response.data;
+  }
+
+  /** Manually scrape sentiment from forexclientsentiment.com and MyFXBook. Returns live data without TrailBlazer refresh. */
+  async scrapeTrailBlazerSentiment() {
+    const response = await this.client.get('/TrailBlazer/sentiment/scrape');
+    return response.data;
+  }
+
+  async getTrailBlazerTopSetups() {
+    const response = await this.client.get('/TrailBlazer/top-setups');
+    return response.data;
+  }
+
+  async refreshTrailBlazer() {
+    const response = await this.client.post('/TrailBlazer/refresh');
+    return response.data;
+  }
+
+  /** Poll refresh progress. Returns status, step, message, percent. */
+  async getTrailBlazerRefreshStatus(): Promise<{
+    status: string;
+    step?: string;
+    message?: string;
+    current: number;
+    total: number;
+    percent: number;
+    completedAt?: string;
+    error?: string;
+  }> {
+    const response = await this.client.get('/TrailBlazer/refresh/status');
+    return response.data;
+  }
+
+  /** AI analysis of an instrument's TrailBlazer score and underlying data. */
+  async getTrailBlazerAnalysis(instrumentId: number): Promise<{ analysis: string }> {
+    const response = await this.client.get(`/TrailBlazer/analysis/${instrumentId}`);
+    return response.data;
+  }
+
+  /** News for an instrument from Brave/Finnhub. */
+  async getTrailBlazerNews(symbol: string): Promise<TrailBlazerNewsItem[]> {
+    const response = await this.client.get(`/TrailBlazer/news/${encodeURIComponent(symbol)}`);
+    return response.data;
+  }
+
+  /** Market outlook/forecast snippets for an instrument from Brave web search. */
+  async getTrailBlazerOutlook(symbol: string): Promise<TrailBlazerOutlookItem[]> {
+    const response = await this.client.get(`/TrailBlazer/outlook/${encodeURIComponent(symbol)}`);
+    return response.data;
   }
 
   // Email endpoints

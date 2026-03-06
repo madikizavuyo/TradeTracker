@@ -23,19 +23,24 @@ namespace TradeHelper.Services
     public class WebScraperService
     {
         private readonly HttpClient _client;
+        private readonly IConfiguration _config;
 
-        public WebScraperService(HttpClient client)
+        public WebScraperService(HttpClient client, IConfiguration config)
         {
             _client = client;
+            _config = config;
         }
+
+        private string MyFxBookEmail => _config["TrailBlazer:MyFXBookEmail"] ?? _config["MyFXBook:Email"] ?? "";
+        private string MyFxBookPassword => _config["TrailBlazer:MyFXBookPassword"] ?? _config["MyFXBook:Password"] ?? "";
 
         public async Task<double> GetRetailSentimentAsync(string symbol)
         {
+            if (string.IsNullOrEmpty(MyFxBookEmail) || string.IsNullOrEmpty(MyFxBookPassword))
+                return 50.0;
             try
             {
-                var email = "madikizavuyo@gmail.com";
-                var password = "dCP7WkV!T+cMd.2"; // Replace with your actual password
-                var url = $"https://www.myfxbook.com/api/login.json?email={email}&password={password}";
+                var url = $"https://www.myfxbook.com/api/login.json?email={Uri.EscapeDataString(MyFxBookEmail)}&password={Uri.EscapeDataString(MyFxBookPassword)}";
                 var response1 = await _client.GetStringAsync(url);
                 using var doc = JsonDocument.Parse(response1);
                 var session = doc.RootElement.GetProperty("session").GetString();
@@ -183,13 +188,13 @@ namespace TradeHelper.Services
 
                private async Task<EconomicIndicator> FetchOECDAsync(string subjectCode, string name, string countryName)
         {
-            var url = $"https://stats.oecd.org/SDMX-JSON/data/DP_LIVE/.{subjectCode}.TOT.A/OECD?contentType=json";
-            var res = await _client.GetStringAsync(url);
-            var doc = JsonDocument.Parse(res);
-
             string value = "N/A";
             try
             {
+                var url = $"https://stats.oecd.org/SDMX-JSON/data/DP_LIVE/.{subjectCode}.TOT.A/OECD?contentType=json";
+                var res = await _client.GetStringAsync(url);
+                var doc = JsonDocument.Parse(res);
+
                 var dataPoints = doc.RootElement.GetProperty("dataSets")[0].GetProperty("series").EnumerateObject();
                 foreach (var point in dataPoints)
                 {
