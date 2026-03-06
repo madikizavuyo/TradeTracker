@@ -19,6 +19,7 @@ import { TrailBlazerRefreshProvider } from './contexts/TrailBlazerRefreshContext
 import TrailBlazerScanner from './pages/TrailBlazerScanner';
 import TrailBlazerStrength from './pages/TrailBlazerStrength';
 import TrailBlazerNewsSentiment from './pages/TrailBlazerNewsSentiment';
+import TrailBlazerBiasChanges from './pages/TrailBlazerBiasChanges';
 
 const router = createBrowserRouter(
   [
@@ -118,6 +119,7 @@ const router = createBrowserRouter(
             { path: 'scanner', element: <TrailBlazerScanner /> },
             { path: 'strength', element: <TrailBlazerStrength /> },
             { path: 'news-sentiment', element: <TrailBlazerNewsSentiment /> },
+            { path: 'bias-changes', element: <TrailBlazerBiasChanges /> },
           ],
         },
         {

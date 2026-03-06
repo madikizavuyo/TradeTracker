@@ -577,6 +577,11 @@ namespace TradeHelper.Services
             };
             string? sourceUsed = null;
 
+            if (_twelveDataService == null)
+            {
+                _logger.LogWarning("Technicals: TwelveDataService not injected for {Symbol} — check DI registration", symbol);
+            }
+
             if (_twelveDataService != null)
             {
                 var td = await _twelveDataService.FetchTechnicalIndicatorsAsync(symbol);
@@ -714,23 +719,37 @@ namespace TradeHelper.Services
                     _logger.LogDebug("Technicals: NasdaqDataLink returned no usable data for {Symbol}, skipping DB write", symbol);
             }
 
-            // If still no usable data, use latest from DB (scoring only; no DB write)
-            if (sourceUsed == null && !results.Values.Any(v => v != 0 && v != 50))
-            {
-                _logger.LogDebug("Technicals: no provider had data for {Symbol}; using latest from DB for scoring only (not posting to database)", symbol);
-                var latest = await db.TechnicalIndicators
-                    .Where(t => t.InstrumentId == instrumentId)
-                    .OrderByDescending(t => t.DateCollected)
-                    .FirstOrDefaultAsync();
-                if (latest != null)
-                {
-                    if (latest.RSI.HasValue && latest.RSI > 0 && latest.RSI < 100) results["RSI"] = latest.RSI.Value;
-                    if (latest.EMA50.HasValue && latest.EMA50 != 0) results["EMA50"] = latest.EMA50.Value;
-                    if (latest.EMA200.HasValue && latest.EMA200 != 0) results["EMA200"] = latest.EMA200.Value;
-                }
-            }
+            // When no provider returns data: do NOT default to 5. Do not write to DB. Scoring will use latest from TechnicalIndicators table.
+            if (sourceUsed == null)
+                _logger.LogDebug("Technicals: no provider had data for {Symbol}; not posting to database; scoring will use latest from TechnicalIndicators if available", symbol);
 
             return (results, sourceUsed);
+        }
+
+        /// <summary>Loads latest technical data from TechnicalIndicators table for scoring. Scoring must use only DB data. Returns null when no data exists (do not default to 5).</summary>
+        public static async Task<(Dictionary<string, double>? technicals, string? source, DateTime? dateCollected)> LoadTechnicalFromDbForScoringAsync(ApplicationDbContext db, int instrumentId)
+        {
+            var latest = await db.TechnicalIndicators
+                .Where(t => t.InstrumentId == instrumentId)
+                .OrderByDescending(t => t.DateCollected)
+                .FirstOrDefaultAsync();
+
+            if (latest == null)
+                return (null, null, null);
+
+            var hasUsableData = (latest.RSI.HasValue && latest.RSI > 0 && latest.RSI < 100) || (latest.EMA50.HasValue && latest.EMA50 != 0) || (latest.EMA200.HasValue && latest.EMA200 != 0);
+            if (!hasUsableData)
+                return (null, null, null);
+
+            var dict = new Dictionary<string, double>(StringComparer.OrdinalIgnoreCase)
+            {
+                ["RSI"] = latest.RSI.HasValue && latest.RSI > 0 && latest.RSI < 100 ? latest.RSI.Value : 50,
+                ["MACD"] = 0,
+                ["MACDSignal"] = 0,
+                ["EMA50"] = latest.EMA50 ?? 0,
+                ["EMA200"] = latest.EMA200 ?? 0
+            };
+            return (dict, latest.Source, latest.DateCollected);
         }
 
         /// <summary>Saves technical indicators only when we have at least one value. When updating, only overwrites fields we received (non-null); preserves existing DB values for missing data.</summary>
@@ -752,6 +771,7 @@ namespace TradeHelper.Services
                 if (ema50Val.HasValue) existing.EMA50 = ema50Val;
                 if (ema200Val.HasValue) existing.EMA200 = ema200Val;
                 existing.DateCollected = now;
+                existing.Source = source;
             }
             else
             {
@@ -764,7 +784,8 @@ namespace TradeHelper.Services
                     SMA50 = sma50,
                     EMA50 = ema50Val,
                     EMA200 = ema200Val,
-                    DateCollected = now
+                    DateCollected = now,
+                    Source = source
                 });
             }
             _logger.LogInformation("Technicals: saved for {Symbol} from {Source} (RSI={HasRsi}, SMA14={HasSma14}, SMA50={HasSma50}, EMA50={HasEma50}, EMA200={HasEma200})", symbol, source, rsiVal.HasValue, sma14.HasValue, sma50.HasValue, ema50Val.HasValue, ema200Val.HasValue);

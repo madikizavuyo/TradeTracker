@@ -34,7 +34,7 @@ namespace TradeHelper.Services
             var fundamentalScore = CalculateFundamentalScore(fundamentalContext);
             var institutionalScore = CalculateInstitutionalScore(cotReport, previousCotReport);
             var retailScore = CalculateRetailSentimentScore(retailSentiment);
-            var technicalScore = CalculateTechnicalScore(technicals);
+            var technicalScore = ComputeTechnicalScore(technicals);
 
             var (wF, wCOT, wR, wNews, wT) = GetWeights(weightContext);
 
@@ -82,26 +82,26 @@ namespace TradeHelper.Services
 
             if (isForex)
             {
-                // Forex: use predefined profiles (10% news when available)
+                // Forex: use predefined profiles (20% news when available)
                 if (ctx.HasCOT && ctx.HasRetail)
-                    (wF, wCOT, wR, wNews, wT) = (0.27, 0.22, 0.13, 0.10, 0.28);
+                    (wF, wCOT, wR, wNews, wT) = (0.27, 0.22, 0.13, 0.20, 0.18);
                 else if (!ctx.HasCOT && ctx.HasRetail)
-                    (wF, wCOT, wR, wNews, wT) = (0.34, 0, 0.13, 0.10, 0.43);
+                    (wF, wCOT, wR, wNews, wT) = (0.34, 0, 0.13, 0.20, 0.33);
                 else if (ctx.HasCOT && !ctx.HasRetail)
-                    (wF, wCOT, wR, wNews, wT) = (0.31, 0.22, 0, 0.10, 0.37);
+                    (wF, wCOT, wR, wNews, wT) = (0.31, 0.22, 0, 0.20, 0.27);
                 else
-                    (wF, wCOT, wR, wNews, wT) = (0.40, 0, 0, 0.10, 0.50);
+                    (wF, wCOT, wR, wNews, wT) = (0.40, 0, 0, 0.20, 0.40);
             }
             else
             {
-                // Non-forex: fixed profiles (10% news when available)
+                // Non-forex: fixed profiles (20% news when available)
                 (wF, wCOT, wR, wNews, wT) = ac.ToUpperInvariant() switch
                 {
-                    "METAL" => (0.22, 0, 0, 0.10, 0.68),
-                    "INDEX" => (0.27, 0, 0, 0.10, 0.63),
-                    "COMMODITY" => (0.31, 0, 0, 0.10, 0.59),
-                    "BOND" => (0.49, 0, 0, 0.10, 0.41),
-                    _ => (0.31, 0, 0, 0.10, 0.59)
+                    "METAL" => (0.22, 0, 0, 0.20, 0.58),
+                    "INDEX" => (0.27, 0, 0, 0.20, 0.53),
+                    "COMMODITY" => (0.31, 0, 0, 0.20, 0.49),
+                    "BOND" => (0.49, 0, 0, 0.20, 0.31),
+                    _ => (0.31, 0, 0, 0.20, 0.49)
                 };
             }
 
@@ -264,7 +264,8 @@ namespace TradeHelper.Services
             return 5.0; // Balanced
         }
 
-        private static double CalculateTechnicalScore(Dictionary<string, double> technicals)
+        /// <summary>Computes a 1–10 technical score from RSI, MACD, EMA indicators. Used by TrailBlazer and DailyPrediction.</summary>
+        public static double ComputeTechnicalScore(Dictionary<string, double> technicals)
         {
             double score = 5.0;
 

@@ -52,7 +52,7 @@ x86/
 *.userosscache
 *.sln.docstates
 
-# Environment files
+# Environment files and secrets (NEVER commit these)
 .env
 .env.local
 .env.development.local
@@ -60,6 +60,10 @@ x86/
 .env.production.local
 appsettings.Development.json
 appsettings.Local.json
+**/appsettings.Development.json
+**/appsettings.Local.json
+**/secrets.json
+**/set-*-secrets*
 
 # OS files
 Thumbs.db

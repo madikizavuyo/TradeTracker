@@ -1,5 +1,5 @@
 import axios, { AxiosInstance } from 'axios';
-import { Trade, Strategy, DashboardData, TradeFilters, LoginResponse, AuthCheckResponse, PredictionHistory, EmailResponse, TrailBlazerNewsItem, TrailBlazerOutlookItem } from './types';
+import { Trade, Strategy, DashboardData, TradeFilters, LoginResponse, AuthCheckResponse, PredictionHistory, EmailResponse, TrailBlazerNewsItem, TrailBlazerOutlookItem, TrailBlazerBiasChange } from './types';
 
 const API_BASE_URL = (import.meta as any).env?.VITE_API_BASE_URL || 'http://localhost:5235/api';
 
@@ -69,16 +69,17 @@ class ApiService {
 
   // Helper to extract data from ApiResponse wrapper
   private extractData<T>(response: any): T {
-    // Check if response has ApiResponse structure
-    if (response.data && typeof response.data === 'object' && 'success' in response.data) {
-      const apiResponse = response.data;
-      if (apiResponse.success && apiResponse.data) {
-        return apiResponse.data as T;
+    const data = response?.data;
+    if (!data || typeof data !== 'object') return data as T;
+    // Wrapped format: { success, data } or { success, message }
+    if ('success' in data) {
+      if (!data.success) {
+        throw new Error(data.message || data.error || 'API request failed');
       }
-      throw new Error(apiResponse.message || 'API request failed');
+      // If wrapped with data property, return it; otherwise return full object (e.g. currency test)
+      return (data.data !== undefined ? data.data : data) as T;
     }
-    // Direct data response
-    return response.data as T;
+    return data as T;
   }
 
   // Authentication
@@ -442,6 +443,12 @@ class ApiService {
   /** Market outlook/forecast snippets for an instrument from Brave web search. */
   async getTrailBlazerOutlook(symbol: string): Promise<TrailBlazerOutlookItem[]> {
     const response = await this.client.get(`/TrailBlazer/outlook/${encodeURIComponent(symbol)}`);
+    return response.data;
+  }
+
+  /** Instruments that changed Bias recently, with when the change happened. */
+  async getTrailBlazerBiasChanges(lastHours = 48, limit = 20): Promise<TrailBlazerBiasChange[]> {
+    const response = await this.client.get(`/TrailBlazer/bias-changes?lastHours=${lastHours}&limit=${limit}`);
     return response.data;
   }
 

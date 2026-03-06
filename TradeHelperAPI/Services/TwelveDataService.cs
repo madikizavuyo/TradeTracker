@@ -246,6 +246,7 @@ namespace TradeHelper.Services
                         if (ema50.HasValue) existing.EMA50 = ema50;
                         if (ema200.HasValue) existing.EMA200 = ema200;
                         existing.DateCollected = now;
+                        existing.Source = "TwelveData";
                     }
                     else
                     {
@@ -258,7 +259,8 @@ namespace TradeHelper.Services
                             SMA50 = sma50,
                             EMA50 = ema50,
                             EMA200 = ema200,
-                            DateCollected = now
+                            DateCollected = now,
+                            Source = "TwelveData"
                         });
                     }
                     loaded++;

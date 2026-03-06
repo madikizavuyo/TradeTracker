@@ -1,3 +1,4 @@
+using System.ComponentModel.DataAnnotations;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
@@ -45,6 +46,8 @@ namespace TradeHelper.Controllers
         [HttpPut("UpdateCurrency")]
         public async Task<IActionResult> UpdateCurrency([FromBody] UpdateCurrencyRequest request)
         {
+            if (request == null || !ModelState.IsValid)
+                return BadRequest(ModelState);
             var userId = User.FindFirstValue(ClaimTypes.NameIdentifier);
             if (string.IsNullOrEmpty(userId)) return Unauthorized();
 
@@ -95,6 +98,10 @@ namespace TradeHelper.Controllers
             [FromQuery] string toCurrency,
             [FromQuery] decimal amount)
         {
+            if (string.IsNullOrWhiteSpace(fromCurrency) || string.IsNullOrWhiteSpace(toCurrency))
+                return BadRequest(new { success = false, error = "From and to currency are required." });
+            if (amount <= 0)
+                return BadRequest(new { success = false, error = "Amount must be greater than zero." });
             try
             {
                 var rate = await _currencyService.GetExchangeRateAsync(fromCurrency, toCurrency);
@@ -140,6 +147,8 @@ namespace TradeHelper.Controllers
 
     public class UpdateCurrencyRequest
     {
+        [Required]
+        [StringLength(3, MinimumLength = 3)]
         public string Currency { get; set; } = "USD";
     }
 }

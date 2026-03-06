@@ -41,7 +41,9 @@ namespace TradeHelper.Services
                 {
                     var country = instrument.Type == "Currency" ? "United States" : "World";
                     var sentiment = TrailBlazerDataService.GetShortPctFromBatch(instrument.Name, myFxBookBatch);
-                    var technical = await scraper.GetTechnicalScoreAsync(instrument.Name);
+                    await trailBlazerData.FetchAndStoreTechnicalIndicatorsAsync(db, instrument.Id, instrument.Name);
+                    var (technicalsFromDb, _, _) = await TrailBlazerDataService.LoadTechnicalFromDbForScoringAsync(db, instrument.Id);
+                    var technical = technicalsFromDb != null ? TrailBlazerScoringEngine.ComputeTechnicalScore(technicalsFromDb) : 5.0;
                     var economic = await scraper.GetEconomicDataAsync(country);
 
                     var indicators = new IndicatorData

@@ -211,17 +211,18 @@ namespace TradeHelper.Services
             // Retail sentiment: MyFXBook community outlook. Never overwrite with 50/50 or empty — preserve existing if incoming is invalid.
             var sentimentResult = await dataService.FetchForexRetailSentimentAsync(instrument.Name, myFxBookSentiment);
             var retailSentiment = sentimentResult ?? (50.0, 50.0);
+            var latestScore = await db.TrailBlazerScores
+                .Where(s => s.InstrumentId == instrument.Id)
+                .OrderByDescending(s => s.DateComputed)
+                .FirstOrDefaultAsync();
+
             var incomingRetailIsEmpty = !sentimentResult.HasValue || (Math.Abs(retailSentiment.longPct - 50) < 1 && Math.Abs(retailSentiment.shortPct - 50) < 1);
             if (incomingRetailIsEmpty)
             {
-                var existing = await db.TrailBlazerScores
-                    .Where(s => s.InstrumentId == instrument.Id)
-                    .OrderByDescending(s => s.DateComputed)
-                    .FirstOrDefaultAsync();
-                var existingIsValid = existing != null && (Math.Abs(existing.RetailLongPct - 50) >= 1 || Math.Abs(existing.RetailShortPct - 50) >= 1);
+                var existingIsValid = latestScore != null && (Math.Abs(latestScore.RetailLongPct - 50) >= 1 || Math.Abs(latestScore.RetailShortPct - 50) >= 1);
                 if (existingIsValid)
                 {
-                    retailSentiment = (existing!.RetailLongPct, existing.RetailShortPct);
+                    retailSentiment = (latestScore!.RetailLongPct, latestScore.RetailShortPct);
                     dataSources.Add("myfxbook"); // preserved from prior load
                     logger.LogDebug("TrailBlazer: {Instrument} retail preserved ({Long:F0}/{Short:F0})", instrument.Name, retailSentiment.longPct, retailSentiment.shortPct);
                 }
@@ -235,7 +236,8 @@ namespace TradeHelper.Services
                 dataSources.Add("myfxbook");
             }
 
-            if (dataSources.Contains("myfxbook"))
+            // Only write to DB when we got viable data from endpoint; never when using preserved/prior data
+            if (dataSources.Contains("myfxbook") && sentimentResult.HasValue && !incomingRetailIsEmpty)
             {
                 db.RetailSentimentSnapshots.Add(new RetailSentimentSnapshot
                 {
@@ -247,9 +249,13 @@ namespace TradeHelper.Services
                 logger.LogDebug("TrailBlazer: retail sentiment snapshot saved for {Instrument} ({Long:F0}/{Short:F0})", instrument.Name, retailSentiment.longPct, retailSentiment.shortPct);
             }
 
-            // Technical indicators (Twelve Data → Market Stack → iTick → EODHD → FMP → Nasdaq Data Link)
-            var (technicals, technicalSource) = await dataService.FetchAndStoreTechnicalIndicatorsAsync(db, instrument.Id, instrument.Name);
-            if (technicalSource != null)
+            // Technical indicators: fetch from providers and save to DB only when we get data. Never default to 5.
+            await dataService.FetchAndStoreTechnicalIndicatorsAsync(db, instrument.Id, instrument.Name);
+
+            // Scoring uses ONLY data from TechnicalIndicators table (never in-memory defaults)
+            var (technicalsFromDb, technicalSource, technicalDateCollected) = await TrailBlazerDataService.LoadTechnicalFromDbForScoringAsync(db, instrument.Id);
+            var hasTechnical = technicalsFromDb != null;
+            if (hasTechnical && technicalSource != null)
                 dataSources.Add(technicalSource);
 
             // Fundamental context: forex = relative strength (base vs quote); commodity = USD fundamentals (weak USD = bullish gold)
@@ -257,8 +263,6 @@ namespace TradeHelper.Services
             var hasFundamental = fundamentalContext.BaseData.Values.Any(v => v != 0) || fundamentalContext.QuoteData.Values.Any(v => v != 0);
             if (hasFundamental)
                 dataSources.Add("FRED");
-
-            var hasTechnical = technicals.Values.Any(v => v != 0 && v != 50);
 
             var (newsSentimentScore, hasNewsSentiment, newsItems) = await dataService.FetchNewsSentimentScoreWithItemsAsync(instrument.Name, instrument.AssetClass);
             var effectiveNewsScore = newsSentimentScore;
@@ -290,10 +294,6 @@ namespace TradeHelper.Services
             else
             {
                 logger.LogDebug("TrailBlazer: no news sentiment for {Instrument}; not posting news to database", instrument.Name);
-                var latestScore = await db.TrailBlazerScores
-                    .Where(s => s.InstrumentId == instrument.Id)
-                    .OrderByDescending(s => s.DateComputed)
-                    .FirstOrDefaultAsync();
                 if (latestScore != null && (latestScore.DataSources ?? "").Contains("Brave/Finnhub", StringComparison.OrdinalIgnoreCase))
                 {
                     effectiveNewsScore = latestScore.NewsSentimentScore;
@@ -311,7 +311,8 @@ namespace TradeHelper.Services
                 hasTechnical,
                 hasNews);
 
-            // Calculate score
+            // Calculate score (technicals from DB only; empty dict when no data)
+            var technicalsForScoring = hasTechnical ? technicalsFromDb! : new Dictionary<string, double>(StringComparer.OrdinalIgnoreCase) { ["RSI"] = 50, ["MACD"] = 0, ["MACDSignal"] = 0, ["EMA50"] = 0, ["EMA200"] = 0 };
             var score = scoringEngine.CalculateScore(
                 instrument.Id,
                 fundamentalContext,
@@ -319,10 +320,33 @@ namespace TradeHelper.Services
                 previousCot,
                 retailSentiment,
                 effectiveNewsScore,
-                technicals,
+                technicalsForScoring,
                 dataSources,
                 weightContext
             );
+
+            // When no technical data in DB: preserve from prior; never default to 5
+            if (!hasTechnical && latestScore != null)
+            {
+                score.TechnicalScore = latestScore.TechnicalScore;
+                score.TechnicalDataDateCollected = latestScore.TechnicalDataDateCollected;
+                logger.LogDebug("TrailBlazer: {Instrument} technical score preserved from prior ({Score:F1})", instrument.Name, score.TechnicalScore);
+            }
+            else if (hasTechnical && technicalDateCollected.HasValue)
+            {
+                score.TechnicalDataDateCollected = technicalDateCollected;
+            }
+            if (!hasFundamental && latestScore != null)
+            {
+                score.FundamentalScore = latestScore.FundamentalScore;
+                score.EconomicScore = latestScore.EconomicScore;
+                logger.LogDebug("TrailBlazer: {Instrument} fundamental score preserved from prior ({Score:F1})", instrument.Name, score.FundamentalScore);
+            }
+            if (cotReport == null && latestScore != null)
+            {
+                score.COTScore = latestScore.COTScore;
+                logger.LogDebug("TrailBlazer: {Instrument} COT score preserved from prior ({Score:F1})", instrument.Name, score.COTScore);
+            }
 
             db.TrailBlazerScores.Add(score);
             var hasTechnicalSource = dataSources.Contains("TwelveData") || dataSources.Contains("MarketStack") || dataSources.Contains("iTick") || dataSources.Contains("EODHD") || dataSources.Contains("FMP") || dataSources.Contains("NasdaqDataLink");

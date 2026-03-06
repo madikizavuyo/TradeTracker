@@ -73,7 +73,8 @@ namespace TradeHelper.Controllers
                     s.NewsSentimentScore,
                     s.EconomicScore,
                     s.DataSources,
-                    s.DateComputed
+                    s.DateComputed,
+                    s.TechnicalDataDateCollected
                 })
                 .ToList();
 
@@ -107,15 +108,17 @@ namespace TradeHelper.Controllers
                 score.NewsSentimentScore,
                 score.EconomicScore,
                 score.DataSources,
-                score.DateComputed
+                score.DateComputed,
+                score.TechnicalDataDateCollected
             });
         }
 
-        /// <summary>Test Gemini API connectivity. Returns OK or error details. No auth required.</summary>
+        /// <summary>Test Gemini API connectivity. Returns OK or error details. Dev only.</summary>
         [AllowAnonymous]
         [HttpGet("analysis/test")]
         public async Task<IActionResult> TestAnalysisApi()
         {
+            if (!_env.IsDevelopment()) return NotFound();
             try
             {
                 var ctx = new InstrumentAnalysisContext(
@@ -229,6 +232,53 @@ namespace TradeHelper.Controllers
             return Ok(history);
         }
 
+        /// <summary>Returns instruments that changed Bias recently, with when the change happened.</summary>
+        [HttpGet("bias-changes")]
+        public async Task<IActionResult> GetBiasChanges([FromQuery] int? lastHours = 48, [FromQuery] int? limit = 20)
+        {
+            var cutoff = DateTime.UtcNow.AddHours(-(lastHours ?? 48));
+            var scoresInWindow = await _context.TrailBlazerScores
+                .Include(s => s.Instrument)
+                .Where(s => s.DateComputed >= cutoff)
+                .OrderBy(s => s.InstrumentId)
+                .ThenBy(s => s.DateComputed)
+                .Select(s => new { s.InstrumentId, s.Instrument!.Name, s.Bias, s.OverallScore, s.DateComputed })
+                .ToListAsync();
+
+            var instrumentIds = scoresInWindow.Select(s => s.InstrumentId).Distinct().ToList();
+            var prevScores = instrumentIds.Count > 0
+                ? await _context.TrailBlazerScores
+                    .Where(s => instrumentIds.Contains(s.InstrumentId) && s.DateComputed < cutoff)
+                    .GroupBy(s => s.InstrumentId)
+                    .Select(g => new { InstrumentId = g.Key, Bias = g.OrderByDescending(x => x.DateComputed).First().Bias })
+                    .ToDictionaryAsync(x => x.InstrumentId, x => x.Bias)
+                : new Dictionary<int, string>();
+
+            var changes = new List<(int InstrumentId, string Name, string PreviousBias, string NewBias, double OverallScore, DateTime ChangedAt)>();
+            var byInstrument = scoresInWindow.GroupBy(s => s.InstrumentId);
+            foreach (var grp in byInstrument)
+            {
+                var ordered = grp.OrderBy(s => s.DateComputed).ToList();
+                var prevBias = prevScores.TryGetValue(grp.Key, out var pb) ? pb : null;
+                foreach (var curr in ordered)
+                {
+                    if (prevBias != null && prevBias != curr.Bias)
+                    {
+                        changes.Add((curr.InstrumentId, curr.Name, prevBias, curr.Bias, curr.OverallScore, curr.DateComputed));
+                    }
+                    prevBias = curr.Bias;
+                }
+            }
+
+            var result = changes
+                .OrderByDescending(c => c.ChangedAt)
+                .Take(limit ?? 20)
+                .Select(c => new { instrumentId = c.InstrumentId, instrumentName = c.Name, previousBias = c.PreviousBias, newBias = c.NewBias, overallScore = c.OverallScore, changedAt = c.ChangedAt })
+                .ToList();
+
+            return Ok(result);
+        }
+
         [HttpGet("heatmap")]
         public async Task<IActionResult> GetHeatmap()
         {
@@ -256,41 +306,45 @@ namespace TradeHelper.Controllers
             return Ok(entries);
         }
 
-        /// <summary>Test CFTC parser without saving. Returns count of parsed reports.</summary>
+        /// <summary>Test CFTC parser without saving. Returns count of parsed reports. Dev only.</summary>
         [AllowAnonymous]
         [HttpGet("cot/test-parse")]
         public async Task<IActionResult> TestCOTParse()
         {
+            if (!_env.IsDevelopment()) return NotFound();
             var batch = await _dataService.FetchCOTReportBatchAsync();
             return Ok(new { count = batch.Count, symbols = batch.Keys.ToList() });
         }
 
-        /// <summary>Test MyFXBook sentiment API. Returns parsed count and sample data.</summary>
+        /// <summary>Test MyFXBook sentiment API. Returns parsed count and sample data. Dev only.</summary>
         [AllowAnonymous]
         [HttpGet("sentiment/test-myfxbook")]
         public async Task<IActionResult> TestMyFxBookSentiment()
         {
+            if (!_env.IsDevelopment()) return NotFound();
             var (result, diagnostic) = await _dataService.FetchMyFxBookSentimentBatchWithDiagnosticAsync();
             var sample = result.Take(10).ToDictionary(k => k.Key, v => new { longPct = v.Value.longPct, shortPct = v.Value.shortPct });
             return Ok(new { count = result.Count, symbols = result.Keys.ToList(), sample, diagnostic });
         }
 
-        /// <summary>Test OECD SDMX API – unemployment data. Returns parsed values by currency.</summary>
+        /// <summary>Test OECD SDMX API – unemployment data. Returns parsed values by currency. Dev only.</summary>
         [AllowAnonymous]
         [HttpGet("oecd/test-unemployment")]
         public async Task<IActionResult> TestOecdUnemployment()
         {
+            if (!_env.IsDevelopment()) return NotFound();
             var currencies = new[] { "USD", "GBP", "ZAR", "EUR" };
             var batch = await _oecdDataService.FetchUnemploymentBatchAsync(currencies);
             var single = await _oecdDataService.FetchUnemploymentRateAsync("USD");
             return Ok(new { batch, singleUsd = single, note = "OECD SDMX API: https://sdmx.oecd.org" });
         }
 
-        /// <summary>Debug: returns raw text snippet from CFTC page to diagnose parsing.</summary>
+        /// <summary>Debug: returns raw text snippet from CFTC page to diagnose parsing. Dev only.</summary>
         [AllowAnonymous]
         [HttpGet("cot/debug-text")]
         public async Task<IActionResult> DebugCOTText()
         {
+            if (!_env.IsDevelopment()) return NotFound();
             try
             {
                 using var client = new HttpClient();
@@ -312,8 +366,8 @@ namespace TradeHelper.Controllers
             }
         }
 
-        /// <summary>Scrape COT data from CFTC and overwrite all existing COT data in the database. Sole source: https://www.cftc.gov/dea/options/financial_lof.htm</summary>
-        [AllowAnonymous]
+        /// <summary>Scrape COT data from CFTC and overwrite all existing COT data in the database. Sole source: https://www.cftc.gov/dea/options/financial_lof.htm. Admin only.</summary>
+        [Authorize(Roles = "Admin")]
         [HttpGet("cot/scrape")]
         public async Task<IActionResult> ScrapeCOT()
         {
@@ -329,7 +383,6 @@ namespace TradeHelper.Controllers
             return Ok(new { message = $"Scraped and saved {reports.Count} COT reports", count = reports.Count, reportDate = reports.First().ReportDate });
         }
 
-        [AllowAnonymous]
         [HttpGet("cot")]
         public async Task<IActionResult> GetCOT()
         {
@@ -364,7 +417,8 @@ namespace TradeHelper.Controllers
             }
         }
 
-        /// <summary>Import retail sentiment from myfxbook-retail-sentiment.json file (workspace root). Saves to database.</summary>
+        /// <summary>Import retail sentiment from myfxbook-retail-sentiment.json file (workspace root). Saves to database. Admin only.</summary>
+        [Authorize(Roles = "Admin")]
         [HttpPost("sentiment/import-from-file")]
         public async Task<IActionResult> ImportSentimentFromFile()
         {
@@ -439,7 +493,8 @@ namespace TradeHelper.Controllers
             return Ok(new { message = $"Imported retail sentiment for {updated} instruments", updated });
         }
 
-        /// <summary>Manually fetch market sentiment from MyFXBook community outlook. Saves to database and returns live data.</summary>
+        /// <summary>Manually fetch market sentiment from MyFXBook community outlook. Saves to database and returns live data. Admin only.</summary>
+        [Authorize(Roles = "Admin")]
         [HttpGet("sentiment/scrape")]
         public async Task<IActionResult> ScrapeSentiment()
         {
@@ -704,6 +759,7 @@ namespace TradeHelper.Controllers
             });
         }
 
+        [Authorize(Roles = "Admin")]
         [HttpPost("refresh")]
         public Task<IActionResult> Refresh()
         {

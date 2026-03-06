@@ -7,6 +7,7 @@ using TradeHelper.Data;
 using TradeHelper.Models;
 using System.Security.Claims;
 using System.Linq;
+using static TradeHelper.Services.FileUploadValidator;
 
 namespace TradeHelper.Controllers
 {
@@ -94,6 +95,12 @@ namespace TradeHelper.Controllers
                 });
             }
 
+            // Sanitize filename - reject path traversal and invalid chars
+            if (!FileUploadValidator.IsFileNameSafe(file.FileName))
+            {
+                return BadRequest(new { message = "Invalid file name. File name must not contain path characters (.., :, \\, /)." });
+            }
+
             // Validate file extension
             var allowedExtensions = new[] { ".csv", ".xlsx", ".xls", ".pdf" };
             var fileExtension = Path.GetExtension(file.FileName)?.ToLowerInvariant();
@@ -102,6 +109,15 @@ namespace TradeHelper.Controllers
                 return BadRequest(new { 
                     message = $"File type '{fileExtension}' is not supported. Allowed types: CSV, Excel (.xlsx, .xls), PDF" 
                 });
+            }
+
+            // Validate content (magic bytes) - do not trust extension alone
+            using (var validateStream = file.OpenReadStream())
+            {
+                if (!await FileUploadValidator.ValidateContentAsync(validateStream, fileExtension))
+                {
+                    return BadRequest(new { message = "File content does not match the declared file type. The file may be corrupted or mislabeled." });
+                }
             }
 
             // Create import history record

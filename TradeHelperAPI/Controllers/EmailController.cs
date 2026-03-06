@@ -9,6 +9,7 @@ using System.Net.Mail;
 using System.Threading.Tasks;
 using TradeHelper.Data;
 using TradeHelper.Models;
+using TradeHelper.Services;
 using System;
 
 namespace TradeHelper.Controllers
@@ -27,10 +28,24 @@ namespace TradeHelper.Controllers
         }
 
         [HttpPost("sendcsv")]
+        [RequestSizeLimit(10_000_000)] // 10MB limit
+        [RequestFormLimits(MultipartBodyLengthLimit = 10_000_000)]
         public async Task<IActionResult> SendCsv(IFormFile file)
         {
             if (file == null || file.Length == 0)
                 return BadRequest("No file uploaded.");
+            if (file.Length > 10_000_000)
+                return BadRequest("File size exceeds 10 MB limit.");
+            if (!FileUploadValidator.IsFileNameSafe(file.FileName))
+                return BadRequest("Invalid file name.");
+            var ext = Path.GetExtension(file.FileName)?.ToLowerInvariant();
+            if (ext != ".csv")
+                return BadRequest("Only CSV files are allowed.");
+            using (var validateStream = file.OpenReadStream())
+            {
+                if (!await FileUploadValidator.ValidateContentAsync(validateStream, ext))
+                    return BadRequest("File content does not match CSV format.");
+            }
 
             var user = await _userManager.GetUserAsync(User);
             if (user == null || string.IsNullOrEmpty(user.Email))

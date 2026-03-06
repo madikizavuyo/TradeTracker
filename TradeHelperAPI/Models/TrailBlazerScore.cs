@@ -32,5 +32,8 @@ namespace TradeHelper.Models
         public string? DataSources { get; set; }
 
         public DateTime DateComputed { get; set; } = DateTime.UtcNow;
+
+        /// <summary>When technical data was last successfully pulled (from TechnicalIndicators.DateCollected).</summary>
+        public DateTime? TechnicalDataDateCollected { get; set; }
     }
 }

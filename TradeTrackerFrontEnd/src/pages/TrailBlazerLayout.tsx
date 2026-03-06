@@ -1,7 +1,7 @@
 import { Outlet, NavLink } from 'react-router-dom';
 import { AppLayout } from '@/components/AppLayout';
 import { Button } from '@/components/ui/button';
-import { Filter, LayoutDashboard, BarChart3, Newspaper, RefreshCw } from 'lucide-react';
+import { Filter, LayoutDashboard, BarChart3, Newspaper, RefreshCw, GitCompare } from 'lucide-react';
 import { StatusDot } from '@/components/StatusDot';
 import { cn } from '@/lib/utils';
 import { useState } from 'react';
@@ -12,6 +12,7 @@ const tabs = [
   { to: '/trailblazer/scanner', label: 'Asset Scanner', icon: Filter },
   { to: '/trailblazer/strength', label: 'Strength', icon: BarChart3 },
   { to: '/trailblazer/news-sentiment', label: 'News Sentiment', icon: Newspaper },
+  { to: '/trailblazer/bias-changes', label: 'Bias Changes', icon: GitCompare },
 ];
 
 export default function TrailBlazerLayout() {
@@ -23,6 +24,7 @@ export default function TrailBlazerLayout() {
     '/trailblazer/scanner': 'scanner',
     '/trailblazer/strength': 'strength',
     '/trailblazer/news-sentiment': 'news-sentiment',
+    '/trailblazer/bias-changes': 'bias-changes',
   };
   const isActive = progress.status === 'running' || progress.status === 'completed';
 

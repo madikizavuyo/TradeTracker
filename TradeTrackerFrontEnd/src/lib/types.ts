@@ -219,6 +219,15 @@ export interface TrailBlazerOutlookItem {
   source: string;
 }
 
+export interface TrailBlazerBiasChange {
+  instrumentId: number;
+  instrumentName: string;
+  previousBias: string;
+  newBias: string;
+  overallScore: number;
+  changedAt: string;
+}
+
 // Email types
 export interface EmailResponse {
   message: string;

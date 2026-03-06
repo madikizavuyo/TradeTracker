@@ -1,5 +1,6 @@
 using Microsoft.AspNetCore.Identity;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Caching.Memory;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
@@ -39,7 +40,9 @@ builder.Services.AddControllersWithViews();
 builder.Services.AddRazorPages();
 
 // JWT Authentication
-var jwtKey = builder.Configuration["Jwt:Key"] ?? "YourSuperSecretKeyForJWTTokenGenerationThatIsAtLeast32CharactersLong!";
+var jwtKey = builder.Configuration["Jwt:Key"];
+if (string.IsNullOrEmpty(jwtKey))
+    throw new InvalidOperationException("Jwt:Key must be configured. See SECRETS.md.");
 var jwtIssuer = builder.Configuration["Jwt:Issuer"] ?? "TradeHelperAPI";
 var jwtAudience = builder.Configuration["Jwt:Audience"] ?? "TradeHelperClient";
 
@@ -63,16 +66,14 @@ builder.Services.AddAuthentication(options =>
     };
 });
 
-// CORS
+// CORS - load allowed origins from config for production
+var corsOrigins = builder.Configuration.GetSection("Cors:AllowedOrigins").Get<string[]>()
+    ?? new[] { "http://localhost:5173", "http://127.0.0.1:5173", "http://localhost:5174", "http://127.0.0.1:5174" };
 builder.Services.AddCors(options =>
 {
     options.AddDefaultPolicy(policy =>
     {
-        policy.WithOrigins(
-                "http://localhost:5173", 
-                "http://127.0.0.1:5173",
-                "http://localhost:5174",
-                "http://127.0.0.1:5174")
+        policy.WithOrigins(corsOrigins)
               .AllowAnyMethod()
               .AllowAnyHeader()
               .AllowCredentials(); // Required for JWT token authentication
@@ -105,10 +106,24 @@ builder.Services.AddHttpClient<iTickService>();
 builder.Services.AddHttpClient<EodhdService>();
 builder.Services.AddHttpClient<FmpService>();
 builder.Services.AddHttpClient<NasdaqDataLinkService>();
-builder.Services.AddHttpClient<TrailBlazerDataService>();
+builder.Services.AddHttpClient<TrailBlazerDataService>()
+    .AddTypedClient((http, sp) => new TrailBlazerDataService(
+        http,
+        sp.GetRequiredService<IConfiguration>(),
+        sp.GetRequiredService<ILogger<TrailBlazerDataService>>(),
+        sp.GetRequiredService<IServiceScopeFactory>(),
+        sp.GetRequiredService<ApiRateLimitService>(),
+        sp.GetService<TwelveDataService>(),
+        sp.GetService<MarketStackService>(),
+        sp.GetService<iTickService>(),
+        sp.GetService<EodhdService>(),
+        sp.GetService<FmpService>(),
+        sp.GetService<NasdaqDataLinkService>(),
+        sp.GetService<IMemoryCache>()));
 builder.Services.AddHttpClient<OecdDataService>();
 builder.Services.AddHttpClient<WorldBankDataService>();
 builder.Services.AddScoped<ApiRateLimitService>();
+builder.Services.AddSingleton<LoginRateLimitService>();
             builder.Services.AddHttpClient<AlphaVantageService>();
 builder.Services.AddScoped<TrailBlazerScoringEngine>();
 builder.Services.AddHostedService<TrailBlazerBackgroundService>();

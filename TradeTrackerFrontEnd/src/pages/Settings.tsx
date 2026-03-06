@@ -64,12 +64,19 @@ export default function Settings() {
   };
 
   const handleTestConversion = async () => {
+    const amount = parseFloat(testAmount);
+    if (isNaN(amount) || amount <= 0) {
+      setTestResult({ success: false, error: 'Please enter a valid amount' });
+      return;
+    }
     try {
-      const result = await api.testCurrencyConversion(testFrom, testTo, parseFloat(testAmount));
+      const result = await api.testCurrencyConversion(testFrom, testTo, amount);
       setTestResult(result);
-    } catch (error) {
+    } catch (error: any) {
       console.error('Currency test failed:', error);
-      setTestResult({ success: false, error: 'Conversion test failed' });
+      const res = error?.response?.data;
+      const msg = res?.error || res?.message || error?.message || 'Conversion test failed. Check you are logged in and the API is running.';
+      setTestResult({ success: false, error: msg });
     }
   };
 
@@ -250,7 +257,7 @@ export default function Settings() {
                 ) : (
                   <div className="flex items-center space-x-2 text-destructive">
                     <AlertCircle className="h-5 w-5" />
-                    <span>Conversion failed. Please try again.</span>
+                    <span>{testResult.error || 'Conversion failed. Please try again.'}</span>
                   </div>
                 )}
               </div>

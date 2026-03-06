@@ -1,5 +1,4 @@
-// WebScraperService.cs – Retrieves data from APIs and scrapes technical summaries
-using HtmlAgilityPack;
+// WebScraperService.cs – Retrieves data from APIs (economic data, retail sentiment)
 using Newtonsoft.Json.Linq;
 using System.Text.Json;
 using System.Net.Http.Headers;
@@ -62,25 +61,6 @@ namespace TradeHelper.Services
             catch { }
             return 50.0;
         }
-
-        public async Task<double> GetTechnicalScoreAsync(string symbol)
-        {
-            try
-            {
-                var html = await _client.GetStringAsync($"https://www.tradingview.com/symbols/{symbol}/technicals/");
-                var doc = new HtmlDocument();
-                doc.LoadHtml(html);
-                var node = doc.DocumentNode.SelectSingleNode("//div[contains(text(),'Summary')]/following-sibling::div");
-                if (node != null)
-                {
-                    if (node.InnerText.Contains("Buy")) return 8.0;
-                    if (node.InnerText.Contains("Sell")) return 2.0;
-                }
-            }
-            catch { }
-            return 5.0;
-        }
-
 
         public async Task<EconomicData> GetEconomicDataAsync(string countryName)
         {

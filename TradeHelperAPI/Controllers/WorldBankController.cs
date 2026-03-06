@@ -10,6 +10,7 @@ namespace TradeHelper.Controllers
     /// </summary>
     [Route("api/[controller]")]
     [ApiController]
+    [Authorize]
     public class WorldBankController : ControllerBase
     {
         private readonly WorldBankDataService _service;
@@ -23,7 +24,6 @@ namespace TradeHelper.Controllers
 
         /// <summary>Get GDP growth (annual %) and inflation (annual %) for a currency (e.g. USD, EUR).</summary>
         [HttpGet("currency/{currency}")]
-        [AllowAnonymous]
         public async Task<IActionResult> GetByCurrency(string currency)
         {
             if (string.IsNullOrWhiteSpace(currency) || currency.Length != 3)
@@ -45,8 +45,7 @@ namespace TradeHelper.Controllers
 
         /// <summary>Get GDP growth and inflation for multiple currencies.</summary>
         [HttpPost("currencies")]
-        [AllowAnonymous]
-        public async Task<IActionResult> GetByCurrencies([FromBody] string[] currencies)
+        public async Task<IActionResult> GetByCurrencies([FromBody] string[]? currencies)
         {
             if (currencies == null || currencies.Length == 0)
                 return BadRequest(new { error = "Provide an array of currency codes" });
@@ -58,7 +57,6 @@ namespace TradeHelper.Controllers
 
         /// <summary>Get GDP growth (annual %) for a country by ISO3 code (e.g. USA, GBR, JPN). Covers 266 countries.</summary>
         [HttpGet("gdp/{iso3}")]
-        [AllowAnonymous]
         public async Task<IActionResult> GetGdpByCountry(string iso3, [FromQuery] int yearsBack = 5)
         {
             if (string.IsNullOrWhiteSpace(iso3) || iso3.Length != 3)
@@ -73,7 +71,6 @@ namespace TradeHelper.Controllers
 
         /// <summary>Get inflation (annual %) for a country by ISO3 code.</summary>
         [HttpGet("inflation/{iso3}")]
-        [AllowAnonymous]
         public async Task<IActionResult> GetInflationByCountry(string iso3, [FromQuery] int yearsBack = 5)
         {
             if (string.IsNullOrWhiteSpace(iso3) || iso3.Length != 3)
@@ -86,9 +83,8 @@ namespace TradeHelper.Controllers
             return Ok(new { country = iso3.ToUpperInvariant(), inflationAnnualPct = value.Value });
         }
 
-        /// <summary>Test World Bank Data360 API connectivity.</summary>
+        /// <summary>Test World Bank Data360 API connectivity. Dev only.</summary>
         [HttpGet("test")]
-        [AllowAnonymous]
         public async Task<IActionResult> Test()
         {
             var (ok, message) = await _service.TestConnectivityAsync();
