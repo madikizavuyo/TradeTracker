@@ -113,9 +113,11 @@ namespace TradeHelper.Controllers
         }
 
         [HttpGet("check")]
-        [Authorize]
+        [Microsoft.AspNetCore.Authorization.AllowAnonymous]
         public IActionResult CheckAuth()
         {
+            if (!User.Identity?.IsAuthenticated ?? true)
+                return Ok(new { authenticated = false, email = (string?)null, roles = Array.Empty<string>() });
             var roles = User.Claims
                 .Where(c => c.Type == ClaimTypes.Role)
                 .Select(c => c.Value)

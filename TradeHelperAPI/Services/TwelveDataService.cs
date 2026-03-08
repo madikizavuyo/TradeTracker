@@ -55,6 +55,11 @@ namespace TradeHelper.Services
             // Oil - Twelve Data uses WTI/USD or similar
             if (upper == "USOIL" || upper == "OIL") return "WTI/USD";
 
+            // Crypto
+            if (upper == "BTC") return "BTC/USD";
+            if (upper == "ETH") return "ETH/USD";
+            if (upper == "SOL") return "SOL/USD";
+
             // Indices - Twelve Data uses different symbols
             if (upper == "US500" || upper == "SPX") return "SPX";
             if (upper == "US30") return "DJI";

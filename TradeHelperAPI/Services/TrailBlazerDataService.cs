@@ -147,7 +147,39 @@ namespace TradeHelper.Services
         }
 
         // ────── COT Data (CFTC direct) ──────
-        // Sole source: https://www.cftc.gov/dea/options/financial_lof.htm
+        // Multiple sources: financial_lof (forex), CME (crypto), COMEX (metals), NYMEX (oil), etc.
+
+        private static readonly string[] CftcCotUrls =
+        {
+            "https://www.cftc.gov/dea/options/financial_lof.htm",
+            "https://www.cftc.gov/dea/options/deacmelof.htm",
+            "https://www.cftc.gov/dea/options/deafrexlof.htm",
+            "https://www.cftc.gov/dea/options/deanymelof.htm",
+            "https://www.cftc.gov/dea/options/deacmxlof.htm",
+            "https://www.cftc.gov/dea/options/deacbtlof.htm",
+            "https://www.cftc.gov/dea/options/deaiceulof.htm",
+            "https://www.cftc.gov/dea/options/deacboelof.htm",
+            "https://www.cftc.gov/dea/options/deanybtlof.htm",
+            "https://www.cftc.gov/dea/options/deaifedlof.htm",
+            "https://www.cftc.gov/dea/options/deaviewcit.htm",
+            "https://www.cftc.gov/dea/options/other_lof.htm",
+            "https://www.cftc.gov/dea/futures/deaiceulf.htm",
+            "https://www.cftc.gov/dea/futures/petroleum_lf.htm",
+            "https://www.cftc.gov/dea/futures/deacmxlf.htm",
+            "https://www.cftc.gov/dea/futures/deanymelf.htm",
+        };
+
+        private static readonly string[] CftcExchangePatterns =
+        {
+            " - CHICAGO MERCANTILE EXCHANGE",
+            " - CHICAGO BOARD OF TRADE",
+            " - COMMODITY EXCHANGE INC",
+            " - NEW YORK MERCANTILE EXCHANGE",
+            " - ICE FUTURES U.S.",
+            " - ICE FUTURES EUROPE",
+            " - CBOE FUTURES EXCHANGE",
+            " - NEW YORK BOARD OF TRADE",
+        };
 
         private static readonly Dictionary<string, string> CftcToSymbol = new(StringComparer.OrdinalIgnoreCase)
         {
@@ -163,29 +195,87 @@ namespace TradeHelper.Services
             ["SO AFRICAN RAND"] = "USDZAR",
             ["EURO FX/BRITISH POUND XRATE"] = "EURGBP",
             ["EURO FX/JAPANESE YEN XRATE"] = "EURJPY",
+            ["BITCOIN"] = "BTC",
+            ["MICRO BITCOIN"] = "BTC",
+            ["ETHER"] = "ETH",
+            ["MICRO ETHER"] = "ETH",
+            ["ETHEREUM"] = "ETH",
+            ["GOLD"] = "XAUUSD",
+            ["GOLD 100 OZ"] = "XAUUSD",
+            ["GOLD - 100 TROY OZ"] = "XAUUSD",
+            ["SILVER"] = "XAGUSD",
+            ["SILVER 5000 OZ"] = "XAGUSD",
+            ["SILVER - 5000 TROY OZ"] = "XAGUSD",
+            ["PLATINUM"] = "XPTUSD",
+            ["PLATINUM 50 OZ"] = "XPTUSD",
+            ["PLATINUM - 50 TROY OZ"] = "XPTUSD",
+            ["PALLADIUM"] = "XPDUSD",
+            ["PALLADIUM 100 OZ"] = "XPDUSD",
+            ["PALLADIUM - 100 TROY OZ"] = "XPDUSD",
+            ["CRUDE OIL"] = "USOIL",
+            ["LIGHT CRUDE OIL"] = "USOIL",
+            ["WTI CRUDE OIL"] = "USOIL",
+            ["CRUDE OIL, LIGHT SWEET"] = "USOIL",
+            ["CRUDE OIL, LIGHT SWEET-WTI"] = "USOIL",
+            ["LIGHT SWEET CRUDE OIL"] = "USOIL",
+            ["10-YEAR T-NOTES"] = "US10Y",
+            ["5-YEAR T-NOTES"] = "US5Y",
+            ["30-YEAR T-BONDS"] = "US30Y",
+            ["EURO FX/SO AFRICAN RAND XRATE"] = "EURZAR",
+            ["BRITISH POUND/SO AFRICAN RAND XRATE"] = "GBPZAR",
+            ["AUSTRALIAN DOLLAR/SO AFRICAN RAND XRATE"] = "AUDZAR",
+            ["NZ DOLLAR/SO AFRICAN RAND XRATE"] = "NZDZAR",
+            ["CANADIAN DOLLAR/SO AFRICAN RAND XRATE"] = "CADZAR",
+            ["SWISS FRANC/SO AFRICAN RAND XRATE"] = "CHFZAR",
+            ["JAPANESE YEN/SO AFRICAN RAND XRATE"] = "JPYZAR",
         };
+
+        /// <summary>Resolves CFTC contract name to symbol. Uses exact match first, then prefix/contains for metals and oil.</summary>
+        private static bool TryResolveCftcSymbol(string name, out string symbol)
+        {
+            if (CftcToSymbol.TryGetValue(name, out symbol!))
+                return true;
+            var upper = name.ToUpperInvariant();
+            if (upper.StartsWith("GOLD") && !upper.Contains("MICRO"))
+                { symbol = "XAUUSD"; return true; }
+            if (upper.StartsWith("SILVER") && !upper.Contains("MICRO"))
+                { symbol = "XAGUSD"; return true; }
+            if (upper.StartsWith("PLATINUM"))
+                { symbol = "XPTUSD"; return true; }
+            if (upper.StartsWith("PALLADIUM"))
+                { symbol = "XPDUSD"; return true; }
+            if ((upper.Contains("CRUDE") && upper.Contains("OIL")) || upper.Contains("LIGHT SWEET") || (upper.Contains("WTI") && upper.Contains("OIL")))
+                { symbol = "USOIL"; return true; }
+            symbol = null!;
+            return false;
+        }
 
         public async Task<Dictionary<string, COTReport>> FetchCOTReportBatchAsync()
         {
             var result = new Dictionary<string, COTReport>();
-            try
+            foreach (var url in CftcCotUrls)
             {
-                using var req = new HttpRequestMessage(HttpMethod.Get, "https://www.cftc.gov/dea/options/financial_lof.htm");
-                req.Headers.TryAddWithoutValidation("User-Agent", "TradeTracker/1.0 (https://github.com/tradetracker)");
-                var response = await _client.SendAsync(req);
-                response.EnsureSuccessStatusCode();
-                var html = await response.Content.ReadAsStringAsync();
-                var doc = new HtmlDocument();
-                doc.LoadHtml(html);
-                var text = doc.DocumentNode.InnerText;
-                var reports = ParseCftcFinancialLof(text);
-                foreach (var r in reports)
-                    if (!result.ContainsKey(r.Symbol) || r.ReportDate > result[r.Symbol].ReportDate)
-                        result[r.Symbol] = r;
-            }
-            catch (Exception ex)
-            {
-                _logger.LogWarning(ex, "CFTC COT fetch failed");
+                try
+                {
+                    using var req = new HttpRequestMessage(HttpMethod.Get, url);
+                    req.Headers.TryAddWithoutValidation("User-Agent", "Mozilla/5.0 (compatible; TradeTracker/1.0; +https://github.com/tradetracker)");
+                    req.Headers.TryAddWithoutValidation("Accept", "text/html,application/xhtml+xml");
+                    var response = await _client.SendAsync(req);
+                    if (!response.IsSuccessStatusCode) continue;
+                    var html = await response.Content.ReadAsStringAsync();
+                    var doc = new HtmlDocument();
+                    doc.LoadHtml(html);
+                    var text = doc.DocumentNode.InnerText;
+                    var reports = ParseCftcFinancialLof(text);
+                    foreach (var r in reports)
+                        if (!result.ContainsKey(r.Symbol) || r.ReportDate > result[r.Symbol].ReportDate)
+                            result[r.Symbol] = r;
+                    await Task.Delay(500);
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogDebug(ex, "CFTC COT fetch failed for {Url}", url);
+                }
             }
             return result;
         }
@@ -201,24 +291,28 @@ namespace TradeHelper.Services
             for (var i = 0; i < lines.Length; i++)
             {
                 var line = lines[i];
-                var exchangeIdx = line.IndexOf(" - CHICAGO MERCANTILE EXCHANGE", StringComparison.Ordinal);
-                if (exchangeIdx < 0) exchangeIdx = line.IndexOf(" - CHICAGO BOARD OF TRADE", StringComparison.Ordinal);
+                var exchangeIdx = -1;
+                foreach (var pattern in CftcExchangePatterns)
+                {
+                    var idx = line.IndexOf(pattern, StringComparison.Ordinal);
+                    if (idx >= 0) { exchangeIdx = idx; break; }
+                }
                 if (exchangeIdx < 0) continue;
 
                 var name = line[..exchangeIdx].Trim();
-                if (!CftcToSymbol.TryGetValue(name, out var symbol)) continue;
+                if (!TryResolveCftcSymbol(name, out var symbol)) continue;
 
                 long openInterest = 0;
-                for (var j = i + 1; j < Math.Min(i + 5, lines.Length); j++)
+                for (var j = i + 1; j < Math.Min(i + 8, lines.Length); j++)
                 {
-                    var oiMatch = Regex.Match(lines[j], @"Open Interest is\s+([\d,]+)");
+                    var oiMatch = Regex.Match(lines[j], @"Open Interest\s*(?:is)?\s*:?\s*([\d,]+)");
                     if (oiMatch.Success && long.TryParse(oiMatch.Groups[1].Value.Replace(",", ""), out openInterest))
                         break;
                 }
                 if (openInterest == 0) continue;
 
                 string? positionsLine = null;
-                for (var j = i + 1; j < Math.Min(i + 10, lines.Length); j++)
+                for (var j = i + 1; j < Math.Min(i + 15, lines.Length); j++)
                 {
                     if (lines[j].Trim().Equals("Positions", StringComparison.OrdinalIgnoreCase) && j + 1 < lines.Length)
                     {
@@ -391,15 +485,32 @@ namespace TradeHelper.Services
             return (score, true);
         }
 
-        /// <summary>Fetches news and returns items for storage. Use when caller needs to persist to DB.</summary>
-        public async Task<(double score, bool hasData, List<NewsItem> items)> FetchNewsSentimentScoreWithItemsAsync(string symbol, string? assetClass)
+        /// <summary>Fetches news and returns items for storage. Use when caller needs to persist to DB. When db is provided, uses existing news from DB if collected within 24h (avoids Brave/Finnhub calls).</summary>
+        public async Task<(double score, bool hasData, List<NewsItem> items)> FetchNewsSentimentScoreWithItemsAsync(string symbol, string? assetClass, ApplicationDbContext? db = null)
         {
+            const int newsReuseHours = 24;
+            if (db != null)
+            {
+                var cutoff = DateTime.UtcNow.AddHours(-newsReuseHours);
+                var fromDb = await db.NewsArticles
+                    .Where(n => n.Symbol == symbol && n.DateCollected >= cutoff)
+                    .OrderByDescending(n => n.DateCollected)
+                    .Take(20)
+                    .ToListAsync();
+                if (fromDb.Count > 0)
+                {
+                    var score = ComputeNewsSentimentFromHeadlines(fromDb.Select(a => a.Headline + " " + a.Summary).Where(s => !string.IsNullOrWhiteSpace(s)).ToList());
+                    _logger.LogDebug("News for {Symbol}: using {Count} articles from DB (collected within {Hours}h, skipping Brave/Finnhub)", symbol, fromDb.Count, newsReuseHours);
+                    return (score, true, new List<NewsItem>()); // Empty items = already in DB, don't re-persist
+                }
+            }
+
             var news = await FetchNewsForSymbolAsync(symbol, assetClass);
             if (news == null || news.Count == 0)
                 return (5.0, false, new List<NewsItem>());
 
-            var score = ComputeNewsSentimentFromHeadlines(news.Select(n => n.Headline + " " + n.Summary).Where(s => !string.IsNullOrWhiteSpace(s)).ToList());
-            return (score, true, news);
+            var computedScore = ComputeNewsSentimentFromHeadlines(news.Select(n => n.Headline + " " + n.Summary).Where(s => !string.IsNullOrWhiteSpace(s)).ToList());
+            return (computedScore, true, news);
         }
 
         private static double ComputeNewsSentimentFromHeadlines(IReadOnlyList<string> texts)
@@ -508,6 +619,9 @@ namespace TradeHelper.Services
             if (symbol == "US500" || symbol == "SPX") return "S&P 500 forecast outlook";
             if (symbol == "US30") return "Dow Jones forecast";
             if (symbol == "US100") return "Nasdaq forecast";
+            if (symbol == "BTC") return "Bitcoin price forecast outlook";
+            if (symbol == "ETH") return "Ethereum price forecast outlook";
+            if (symbol == "SOL") return "Solana price forecast outlook";
             return $"{symbol} forecast outlook";
         }
 
@@ -538,6 +652,9 @@ namespace TradeHelper.Services
             if (symbol == "DE40") return "DAX Germany";
             if (symbol == "UK100") return "FTSE 100";
             if (symbol == "JP225") return "Nikkei 225";
+            if (symbol == "BTC") return "Bitcoin price crypto";
+            if (symbol == "ETH") return "Ethereum price crypto";
+            if (symbol == "SOL") return "Solana price crypto";
             return $"{symbol} market news";
         }
 

@@ -8,43 +8,43 @@ export default function Index() {
     <div className="min-h-screen bg-background">
       {/* Navigation */}
       <nav className="border-b">
-        <div className="container mx-auto flex h-16 items-center justify-between px-6">
-          <Link to="/" className="flex items-center space-x-2">
-            <TrendingUp className="h-6 w-6 text-primary" />
-            <span className="text-xl font-bold text-primary">TradeTracker</span>
+        <div className="container mx-auto flex h-14 sm:h-16 items-center justify-between px-4 sm:px-6">
+          <Link to="/" className="flex items-center space-x-2 min-h-[44px] items-center">
+            <TrendingUp className="h-5 w-5 sm:h-6 sm:w-6 text-primary" />
+            <span className="text-lg sm:text-xl font-bold text-primary">TradeTracker</span>
           </Link>
-          <div className="flex items-center space-x-4">
+          <div className="flex items-center gap-2 sm:gap-4">
             <Link to="/login">
-              <Button variant="ghost">Sign In</Button>
+              <Button variant="ghost" className="min-h-[44px]">Sign In</Button>
             </Link>
             <Link to="/register">
-              <Button>Get Started</Button>
+              <Button className="min-h-[44px]">Get Started</Button>
             </Link>
           </div>
         </div>
       </nav>
 
       {/* Hero Section */}
-      <section className="container mx-auto px-6 py-20">
+      <section className="container mx-auto px-4 sm:px-6 py-12 sm:py-20">
         <div className="text-center">
-          <h1 className="text-5xl font-bold tracking-tight">
+          <h1 className="text-3xl sm:text-4xl md:text-5xl font-bold tracking-tight">
             <span className="bg-gradient-to-r from-primary to-blue-600 bg-clip-text text-transparent">
               Track Your Trades
             </span>
             <br />
             Like a Professional
           </h1>
-          <p className="mx-auto mt-6 max-w-2xl text-lg text-muted-foreground">
+          <p className="mx-auto mt-4 sm:mt-6 max-w-2xl text-base sm:text-lg text-muted-foreground px-2">
             Comprehensive trading journal with advanced analytics, strategy tracking, and performance insights.
             Take your trading to the next level with data-driven decisions.
           </p>
-          <div className="mt-10 flex items-center justify-center gap-4">
-            <Link to="/register">
-              <Button size="lg" className="text-base">
+          <div className="mt-8 sm:mt-10 flex flex-col sm:flex-row items-center justify-center gap-3 sm:gap-4">
+            <Link to="/register" className="w-full sm:w-auto">
+              <Button size="lg" className="text-base w-full sm:w-auto min-h-[44px]">
                 Start Trading Journal
               </Button>
             </Link>
-            <Button size="lg" variant="outline" className="text-base">
+            <Button size="lg" variant="outline" className="text-base w-full sm:w-auto min-h-[44px]">
               Watch Demo
             </Button>
           </div>
@@ -52,8 +52,8 @@ export default function Index() {
       </section>
 
       {/* Features Grid */}
-      <section className="container mx-auto px-6 py-20">
-        <h2 className="text-center text-3xl font-bold">Everything You Need to Succeed</h2>
+      <section className="container mx-auto px-4 sm:px-6 py-12 sm:py-20">
+        <h2 className="text-center text-2xl sm:text-3xl font-bold">Everything You Need to Succeed</h2>
         <p className="mx-auto mt-4 max-w-2xl text-center text-muted-foreground">
           Powerful features designed for serious traders who want to improve their performance
         </p>
@@ -109,9 +109,9 @@ export default function Index() {
       </section>
 
       {/* Statistics Section */}
-      <section className="bg-muted py-20">
-        <div className="container mx-auto px-6">
-          <div className="grid gap-8 md:grid-cols-4">
+      <section className="bg-muted py-12 sm:py-20">
+        <div className="container mx-auto px-4 sm:px-6">
+          <div className="grid gap-6 sm:gap-8 grid-cols-2 md:grid-cols-4">
             <div className="text-center">
               <div className="text-4xl font-bold text-primary">10,000+</div>
               <div className="mt-2 text-sm text-muted-foreground">Trades Tracked</div>
@@ -133,18 +133,18 @@ export default function Index() {
       </section>
 
       {/* CTA Section */}
-      <section className="container mx-auto px-6 py-20">
+      <section className="container mx-auto px-4 sm:px-6 py-12 sm:py-20">
         <Card className="border-2">
-          <CardContent className="p-12 text-center">
-            <h2 className="text-3xl font-bold">Ready to Elevate Your Trading?</h2>
+          <CardContent className="p-6 sm:p-12 text-center">
+            <h2 className="text-2xl sm:text-3xl font-bold">Ready to Elevate Your Trading?</h2>
             <p className="mx-auto mt-4 max-w-2xl text-muted-foreground">
               Join thousands of traders who are improving their performance with TradeTracker
             </p>
-            <div className="mt-8 flex items-center justify-center gap-4">
-              <Link to="/register">
-                <Button size="lg">Start Free Trial</Button>
+            <div className="mt-6 sm:mt-8 flex flex-col sm:flex-row items-center justify-center gap-3 sm:gap-4">
+              <Link to="/register" className="w-full sm:w-auto">
+                <Button size="lg" className="w-full sm:w-auto min-h-[44px]">Start Free Trial</Button>
               </Link>
-              <Button size="lg" variant="outline">
+              <Button size="lg" variant="outline" className="w-full sm:w-auto min-h-[44px]">
                 Contact Sales
               </Button>
             </div>
@@ -153,9 +153,9 @@ export default function Index() {
       </section>
 
       {/* Footer */}
-      <footer className="border-t py-8">
-        <div className="container mx-auto px-6">
-          <div className="flex items-center justify-between">
+      <footer className="border-t py-6 sm:py-8">
+        <div className="container mx-auto px-4 sm:px-6">
+          <div className="flex flex-col sm:flex-row items-center justify-between gap-4 text-center sm:text-left">
             <div className="flex items-center space-x-2">
               <TrendingUp className="h-5 w-5 text-primary" />
               <span className="font-semibold text-primary">TradeTracker</span>

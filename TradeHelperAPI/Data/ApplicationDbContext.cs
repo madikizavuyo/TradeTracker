@@ -1,3 +1,4 @@
+using Microsoft.AspNetCore.Identity;
 using Microsoft.AspNetCore.Identity.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore;
 using TradeHelper.Models;
@@ -33,6 +34,25 @@ namespace TradeHelper.Data
         {
             base.OnModelCreating(builder);
 
+            // SmarterASP.NET: limit Identity keys to 128 chars (900-byte index limit)
+            builder.Entity<IdentityUser>(e => e.Property(u => u.Id).HasMaxLength(128));
+            builder.Entity<IdentityRole>(e => e.Property(r => r.Id).HasMaxLength(128));
+            builder.Entity<IdentityUserRole<string>>(e =>
+            {
+                e.Property(ur => ur.UserId).HasMaxLength(128);
+                e.Property(ur => ur.RoleId).HasMaxLength(128);
+            });
+            builder.Entity<IdentityUserClaim<string>>(e => e.Property(uc => uc.UserId).HasMaxLength(128));
+            builder.Entity<IdentityUserLogin<string>>(e => e.Property(ul => ul.UserId).HasMaxLength(128));
+            builder.Entity<IdentityUserToken<string>>(e => e.Property(ut => ut.UserId).HasMaxLength(128));
+            builder.Entity<IdentityRoleClaim<string>>(e => e.Property(rc => rc.RoleId).HasMaxLength(128));
+
+            // Application entities with UserId FK
+            builder.Entity<Trade>().Property(t => t.UserId).HasMaxLength(128);
+            builder.Entity<Strategy>().Property(s => s.UserId).HasMaxLength(128);
+            builder.Entity<UserSettings>().Property(u => u.UserId).HasMaxLength(128);
+            builder.Entity<BrokerImportHistory>().Property(b => b.UserId).HasMaxLength(128);
+
             builder.Entity<TrailBlazerScore>()
                 .ToTable("EdgeFinderScores")
                 .HasIndex(e => new { e.InstrumentId, e.DateComputed });
@@ -41,8 +61,11 @@ namespace TradeHelper.Data
             builder.Entity<COTReport>()
                 .HasIndex(c => new { c.Symbol, c.ReportDate });
 
-            builder.Entity<EconomicHeatmapEntry>()
-                .HasIndex(e => new { e.Currency, e.Indicator });
+            builder.Entity<EconomicHeatmapEntry>(e =>
+            {
+                e.Property(x => x.Id).ValueGeneratedOnAdd();
+                e.HasIndex(x => new { x.Currency, x.Indicator });
+            });
 
             builder.Entity<TechnicalIndicator>()
                 .HasIndex(t => new { t.InstrumentId, t.Date });
@@ -62,6 +85,7 @@ namespace TradeHelper.Data
             builder.Entity<SystemSetting>()
                 .HasIndex(s => s.Key)
                 .IsUnique();
+            builder.Entity<SystemSetting>().Property(s => s.Key).HasMaxLength(128);
 
             SeedInstruments(builder);
         }

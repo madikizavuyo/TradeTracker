@@ -80,28 +80,32 @@ namespace TradeHelper.Services
 
             double wF, wCOT, wR, wNews, wT;
 
+            // Fundamentals: 11% (10-12% target). Remainder distributed to other factors.
+            const double wFundamental = 0.11;
+
             if (isForex)
             {
-                // Forex: use predefined profiles (20% news when available)
+                // Forex: fundamentals 11%, news ~20% when available
                 if (ctx.HasCOT && ctx.HasRetail)
-                    (wF, wCOT, wR, wNews, wT) = (0.27, 0.22, 0.13, 0.20, 0.18);
+                    (wF, wCOT, wR, wNews, wT) = (wFundamental, 0.28, 0.16, 0.20, 0.25);
                 else if (!ctx.HasCOT && ctx.HasRetail)
-                    (wF, wCOT, wR, wNews, wT) = (0.34, 0, 0.13, 0.20, 0.33);
+                    (wF, wCOT, wR, wNews, wT) = (wFundamental, 0, 0.16, 0.20, 0.53);
                 else if (ctx.HasCOT && !ctx.HasRetail)
-                    (wF, wCOT, wR, wNews, wT) = (0.31, 0.22, 0, 0.20, 0.27);
+                    (wF, wCOT, wR, wNews, wT) = (wFundamental, 0.28, 0, 0.20, 0.41);
                 else
-                    (wF, wCOT, wR, wNews, wT) = (0.40, 0, 0, 0.20, 0.40);
+                    (wF, wCOT, wR, wNews, wT) = (wFundamental, 0, 0, 0.20, 0.69);
             }
             else
             {
-                // Non-forex: fixed profiles (20% news when available)
+                // Non-forex: fundamentals 11%
                 (wF, wCOT, wR, wNews, wT) = ac.ToUpperInvariant() switch
                 {
-                    "METAL" => (0.22, 0, 0, 0.20, 0.58),
-                    "INDEX" => (0.27, 0, 0, 0.20, 0.53),
-                    "COMMODITY" => (0.31, 0, 0, 0.20, 0.49),
-                    "BOND" => (0.49, 0, 0, 0.20, 0.31),
-                    _ => (0.31, 0, 0, 0.20, 0.49)
+                    "METAL" => (wFundamental, 0, 0, 0.20, 0.69),
+                    "INDEX" => (wFundamental, 0, 0, 0.20, 0.69),
+                    "COMMODITY" => (wFundamental, 0, 0, 0.20, 0.69),
+                    "BOND" => (wFundamental, 0, 0, 0.20, 0.69),
+                    "CRYPTO" => (wFundamental, 0.25, 0, 0.20, 0.44),
+                    _ => (wFundamental, 0, 0, 0.20, 0.69)
                 };
             }
 

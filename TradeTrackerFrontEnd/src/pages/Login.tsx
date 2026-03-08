@@ -68,26 +68,6 @@ export default function Login() {
             <CardDescription>Sign in to your account to continue</CardDescription>
           </CardHeader>
           <CardContent>
-            {/* Test Credentials Info */}
-            <div className="mb-6 p-4 bg-muted rounded-lg border border-border">
-              <p className="text-sm font-semibold mb-2 text-foreground">Test Credentials:</p>
-              <div className="space-y-2 text-xs">
-                <div>
-                  <span className="font-medium text-primary">Admin User:</span>
-                  <div className="ml-2 mt-1">
-                    <div>Email: <code className="bg-background px-1 py-0.5 rounded">admin@tradehelper.ai</code></div>
-                    <div>Password: <code className="bg-background px-1 py-0.5 rounded">Admin@1234</code></div>
-                  </div>
-                </div>
-                <div>
-                  <span className="font-medium text-primary">Normal User:</span>
-                  <div className="ml-2 mt-1">
-                    <div>Email: <code className="bg-background px-1 py-0.5 rounded">user@tradehelper.ai</code></div>
-                    <div>Password: <code className="bg-background px-1 py-0.5 rounded">User@1234</code></div>
-                  </div>
-                </div>
-              </div>
-            </div>
             <form onSubmit={handleSubmit} className="space-y-4">
               {error && (
                 <div className="flex items-center space-x-2 text-sm text-destructive bg-destructive/10 p-3 rounded-md">

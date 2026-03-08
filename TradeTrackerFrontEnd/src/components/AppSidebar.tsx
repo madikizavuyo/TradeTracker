@@ -1,5 +1,5 @@
 import { Link, useLocation, useNavigate } from 'react-router-dom';
-import { Home, TrendingUp, Target, FileText, LogOut, User, Settings, Upload, Crosshair, Brain } from 'lucide-react';
+import { Home, TrendingUp, Target, FileText, LogOut, User, Settings, Upload, Crosshair, Brain, X } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { cn } from '@/lib/utils';
 import { useAuth } from '@/lib/AuthContext';
@@ -15,7 +15,12 @@ const navigation = [
   { name: 'Settings', href: '/settings', icon: Settings },
 ];
 
-export function AppSidebar() {
+interface AppSidebarProps {
+  open?: boolean;
+  onClose?: () => void;
+}
+
+export function AppSidebar({ open = false, onClose }: AppSidebarProps) {
   const location = useLocation();
   const navigate = useNavigate();
   const { user, logout } = useAuth();
@@ -23,15 +28,25 @@ export function AppSidebar() {
   const handleLogout = async () => {
     await logout();
     navigate('/');
+    onClose?.();
   };
 
-  return (
+  const handleNavClick = () => {
+    onClose?.();
+  };
+
+  const sidebarContent = (
     <div className="flex h-full w-64 flex-col bg-card border-r">
-      <div className="flex h-16 items-center border-b px-6">
-        <Link to="/dashboard" className="flex items-center space-x-2">
+      <div className="flex h-16 items-center justify-between border-b px-4 lg:px-6">
+        <Link to="/dashboard" className="flex items-center space-x-2" onClick={handleNavClick}>
           <TrendingUp className="h-6 w-6 text-primary" />
           <span className="text-xl font-bold text-primary">TradeTracker</span>
         </Link>
+        {onClose && (
+          <Button variant="ghost" size="icon" className="lg:hidden h-11 w-11 min-h-[44px] min-w-[44px]" onClick={onClose} aria-label="Close menu">
+            <X className="h-5 w-5" />
+          </Button>
+        )}
       </div>
       
       <nav className="flex-1 space-y-1 px-3 py-4">
@@ -41,14 +56,15 @@ export function AppSidebar() {
             <Link
               key={item.name}
               to={item.href}
+              onClick={handleNavClick}
               className={cn(
-                'flex items-center space-x-3 rounded-lg px-3 py-2 text-sm font-medium transition-colors',
+                'flex items-center space-x-3 rounded-lg px-3 py-3 text-sm font-medium transition-colors min-h-[44px]',
                 isActive
                   ? 'bg-primary text-primary-foreground'
                   : 'text-muted-foreground hover:bg-accent hover:text-accent-foreground'
               )}
             >
-              <item.icon className="h-5 w-5" />
+              <item.icon className="h-5 w-5 shrink-0" />
               <span>{item.name}</span>
             </Link>
           );
@@ -65,7 +81,7 @@ export function AppSidebar() {
         )}
         <Button
           variant="ghost"
-          className="w-full justify-start text-muted-foreground hover:text-destructive"
+          className="w-full justify-start text-muted-foreground hover:text-destructive min-h-[44px]"
           onClick={handleLogout}
         >
           <LogOut className="h-4 w-4 mr-2" />
@@ -73,6 +89,34 @@ export function AppSidebar() {
         </Button>
       </div>
     </div>
+  );
+
+  return (
+    <>
+      {/* Desktop: always visible */}
+      <aside className="hidden lg:flex shrink-0">{sidebarContent}</aside>
+      {/* Mobile: overlay drawer */}
+      {onClose && (
+        <>
+          <div
+            className={cn(
+              'fixed inset-0 z-40 bg-black/50 transition-opacity lg:hidden',
+              open ? 'opacity-100' : 'opacity-0 pointer-events-none'
+            )}
+            onClick={onClose}
+            aria-hidden="true"
+          />
+          <aside
+            className={cn(
+              'fixed inset-y-0 left-0 z-50 w-64 transform transition-transform duration-200 ease-out lg:hidden',
+              open ? 'translate-x-0' : '-translate-x-full'
+            )}
+          >
+            {sidebarContent}
+          </aside>
+        </>
+      )}
+    </>
   );
 }
 

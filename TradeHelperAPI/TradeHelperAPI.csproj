@@ -5,6 +5,10 @@
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
     <UserSecretsId>tradehelper-dev-secrets</UserSecretsId>
+    <ServerGarbageCollection>false</ServerGarbageCollection>
+    <RuntimeIdentifier>win-x64</RuntimeIdentifier>
+    <SelfContained>true</SelfContained>
+    <IsWebConfigTransformDisabled>true</IsWebConfigTransformDisabled>
   </PropertyGroup>
 
   <ItemGroup>
@@ -24,4 +28,13 @@
     <PackageReference Include="Newtonsoft.Json" Version="13.0.3" />
   </ItemGroup>
 
+  <!-- Ensure logs folder exists in publish output for ASP.NET Core stdout logging -->
+  <Target Name="IncludeLogsFolder" AfterTargets="ComputeFilesToPublish">
+    <ItemGroup>
+      <ResolvedFileToPublish Include="$(ProjectDir)logs\.gitkeep" Condition="Exists('$(ProjectDir)logs\.gitkeep')">
+        <RelativePath>logs\.gitkeep</RelativePath>
+        <CopyToPublishDirectory>PreserveNewest</CopyToPublishDirectory>
+      </ResolvedFileToPublish>
+    </ItemGroup>
+  </Target>
 </Project>

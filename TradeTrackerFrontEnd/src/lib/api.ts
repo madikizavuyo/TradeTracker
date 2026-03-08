@@ -413,6 +413,12 @@ class ApiService {
     return response.data;
   }
 
+  /** Last successful data refresh timestamp (max DateComputed from scores). */
+  async getTrailBlazerLastRefresh(): Promise<{ lastSuccessfulRefresh: string | null }> {
+    const response = await this.client.get('/TrailBlazer/refresh/last');
+    return response.data;
+  }
+
   /** Poll refresh progress. Returns status, step, message, percent. */
   async getTrailBlazerRefreshStatus(): Promise<{
     status: string;

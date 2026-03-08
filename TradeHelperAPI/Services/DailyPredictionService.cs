@@ -17,6 +17,8 @@ namespace TradeHelper.Services
 
         protected override async Task ExecuteAsync(CancellationToken stoppingToken)
         {
+            // Delay 5 min on startup so app can serve HTTP requests first (avoids "unhealthy" recycle on shared hosting)
+            await Task.Delay(TimeSpan.FromMinutes(5), stoppingToken);
             while (!stoppingToken.IsCancellationRequested)
             {
                 await RunPredictionCycleAsync();

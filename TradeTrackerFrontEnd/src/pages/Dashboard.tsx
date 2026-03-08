@@ -62,8 +62,8 @@ export default function Dashboard() {
     <AppLayout>
       <div className="space-y-6">
         <div>
-          <h1 className="text-3xl font-bold tracking-tight text-primary">Dashboard</h1>
-          <p className="text-muted-foreground">Welcome back! Here's your trading overview.</p>
+          <h1 className="text-2xl sm:text-3xl font-bold tracking-tight text-primary">Dashboard</h1>
+          <p className="text-sm sm:text-base text-muted-foreground">Welcome back! Here's your trading overview.</p>
         </div>
 
         {/* Performance Cards */}

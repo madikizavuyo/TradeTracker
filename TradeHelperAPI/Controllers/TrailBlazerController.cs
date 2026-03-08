@@ -593,7 +593,7 @@ namespace TradeHelper.Controllers
             return Ok(sentiment);
         }
 
-        /// <summary>Returns news for an instrument. Reads from DB first (last 6h); if empty, fetches, stores, and returns.</summary>
+        /// <summary>Returns news for an instrument. Reads from DB first (last 24h); if empty, fetches, stores, and returns.</summary>
         [HttpGet("news/{symbol}")]
         public async Task<IActionResult> GetNews(string symbol)
         {
@@ -601,7 +601,7 @@ namespace TradeHelper.Controllers
                 return BadRequest(new { message = "Symbol is required" });
 
             var normalized = symbol.Replace("/", "").Replace("_", "").Replace(" ", "").ToUpperInvariant();
-            var cutoff = DateTime.UtcNow.AddHours(-6);
+            var cutoff = DateTime.UtcNow.AddHours(-24);
             var fromDb = await _context.NewsArticles
                 .Where(n => n.Symbol == normalized && n.DateCollected >= cutoff)
                 .OrderByDescending(n => n.PublishedAt)
@@ -739,6 +739,14 @@ namespace TradeHelper.Controllers
             var bearish = allScores.Where(s => s.Bias == "Bearish").OrderBy(s => s.OverallScore).Take(5).ToList();
 
             return Ok(new { bullish, bearish });
+        }
+
+        /// <summary>Returns the timestamp of the last successful data refresh (max DateComputed from TrailBlazerScores).</summary>
+        [HttpGet("refresh/last")]
+        public async Task<IActionResult> GetLastRefresh()
+        {
+            var last = await _context.TrailBlazerScores.MaxAsync(s => (DateTime?)s.DateComputed);
+            return Ok(new { lastSuccessfulRefresh = last });
         }
 
         /// <summary>Poll refresh progress. Returns status, step, message, percent. Poll every 2–3 seconds while refreshing.</summary>

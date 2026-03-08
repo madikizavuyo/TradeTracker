@@ -25,8 +25,8 @@ namespace TradeHelper.Services
 
         protected override async Task ExecuteAsync(CancellationToken stoppingToken)
         {
-            // Wait 30s after startup before first run
-            await Task.Delay(TimeSpan.FromSeconds(30), stoppingToken);
+            // Wait 3 min after startup so app can serve HTTP requests first (avoids "unhealthy" recycle on shared hosting)
+            await Task.Delay(TimeSpan.FromMinutes(3), stoppingToken);
 
             while (!stoppingToken.IsCancellationRequested)
             {
@@ -118,7 +118,7 @@ namespace TradeHelper.Services
                 // Append heatmap (keep history for rollback); only add when from FRED (not DB fallback)
                 if (!heatmapFromDb)
                     db.EconomicHeatmapEntries.AddRange(heatmapEntries);
-                await db.SaveChangesAsync();
+                await SaveChangesWithFullErrorLoggingAsync(db, "heatmap/COT");
 
                 _progress.SetRunning("instruments", "Processing instruments...", 0, instruments.Count);
                 var idx = 0;
@@ -148,7 +148,7 @@ namespace TradeHelper.Services
                     await Task.Delay(500);
                 }
 
-                await db.SaveChangesAsync();
+                await SaveChangesWithFullErrorLoggingAsync(db, "scores/news/COT/heatmap batch");
 
                 db.UserLogs.Add(new UserLog
                 {
@@ -156,7 +156,7 @@ namespace TradeHelper.Services
                     Action = $"TrailBlazer refresh completed for {instruments.Count} instruments",
                     Timestamp = DateTime.UtcNow
                 });
-                await db.SaveChangesAsync();
+                await SaveChangesWithFullErrorLoggingAsync(db, "UserLog completion");
 
                 _progress.SetCompleted(instruments.Count);
                 _logger.LogInformation(
@@ -165,8 +165,9 @@ namespace TradeHelper.Services
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "TrailBlazer refresh failed");
-                _progress.SetFailed(ex.Message);
+                var fullMsg = GetFullExceptionMessage(ex);
+                _logger.LogError(ex, "TrailBlazer refresh failed: {FullMessage}", fullMsg);
+                _progress.SetFailed(fullMsg.Length > 200 ? fullMsg[..200] + "..." : fullMsg);
             }
         }
 
@@ -264,7 +265,7 @@ namespace TradeHelper.Services
             if (hasFundamental)
                 dataSources.Add("FRED");
 
-            var (newsSentimentScore, hasNewsSentiment, newsItems) = await dataService.FetchNewsSentimentScoreWithItemsAsync(instrument.Name, instrument.AssetClass);
+            var (newsSentimentScore, hasNewsSentiment, newsItems) = await dataService.FetchNewsSentimentScoreWithItemsAsync(instrument.Name, instrument.AssetClass, db);
             var effectiveNewsScore = newsSentimentScore;
             if (hasNewsSentiment)
             {
@@ -386,9 +387,36 @@ namespace TradeHelper.Services
             }
 
             var isForex = instrument.Type == "Currency" && instrument.Name.Length >= 6;
-            var isUsdCommodity = instrument.Type == "Commodity" && (instrument.Name == "XAUUSD" || instrument.Name == "XAGUSD" || instrument.Name == "XPTUSD" || instrument.Name == "XPDUSD" || instrument.Name == "USOIL");
+            var isUsdCommodity = instrument.Type == "Commodity" && (
+                instrument.Name == "XAUUSD" || instrument.Name == "XAGUSD" || instrument.Name == "XPTUSD" || instrument.Name == "XPDUSD" || instrument.Name == "USOIL" ||
+                instrument.Name == "BTC" || instrument.Name == "ETH" || instrument.Name == "SOL");
 
             return new FundamentalContext(baseData, quoteData, isForex, isUsdCommodity);
+        }
+
+        private async Task SaveChangesWithFullErrorLoggingAsync(ApplicationDbContext db, string context)
+        {
+            try
+            {
+                await db.SaveChangesAsync();
+            }
+            catch (Exception ex)
+            {
+                var fullMsg = GetFullExceptionMessage(ex);
+                _logger.LogError(ex, "SaveChanges failed ({Context}): {FullMessage}", context, fullMsg);
+                throw;
+            }
+        }
+
+        private static string GetFullExceptionMessage(Exception ex)
+        {
+            var parts = new List<string>();
+            for (var e = ex; e != null; e = e.InnerException)
+                parts.Add($"{e.GetType().Name}: {e.Message}");
+            var msg = string.Join(" | Inner: ", parts);
+            if (ex is Microsoft.EntityFrameworkCore.DbUpdateException && ex.InnerException != null)
+                msg += " | " + ex.InnerException.Message;
+            return msg;
         }
     }
 }

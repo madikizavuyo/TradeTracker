@@ -1,11 +1,12 @@
 import { Outlet, NavLink } from 'react-router-dom';
 import { AppLayout } from '@/components/AppLayout';
 import { Button } from '@/components/ui/button';
-import { Filter, LayoutDashboard, BarChart3, Newspaper, RefreshCw, GitCompare } from 'lucide-react';
+import { Filter, LayoutDashboard, BarChart3, Newspaper, RefreshCw, GitCompare, Clock } from 'lucide-react';
 import { StatusDot } from '@/components/StatusDot';
 import { cn } from '@/lib/utils';
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { useTrailBlazerRefresh } from '@/contexts/TrailBlazerRefreshContext';
+import { api } from '@/lib/api';
 
 const tabs = [
   { to: '/trailblazer', label: 'Overview', icon: LayoutDashboard },
@@ -15,9 +16,38 @@ const tabs = [
   { to: '/trailblazer/bias-changes', label: 'Bias Changes', icon: GitCompare },
 ];
 
+function formatLastRefresh(iso: string): string {
+  try {
+    const d = new Date(iso);
+    return d.toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' });
+  } catch {
+    return iso;
+  }
+}
+
 export default function TrailBlazerLayout() {
   const [refreshing, setRefreshing] = useState(false);
+  const [lastRefresh, setLastRefresh] = useState<string | null>(null);
   const { triggerRefresh, progress, tabStatus } = useTrailBlazerRefresh();
+
+  const fetchLastRefresh = async () => {
+    try {
+      const { lastSuccessfulRefresh } = await api.getTrailBlazerLastRefresh();
+      setLastRefresh(lastSuccessfulRefresh ?? null);
+    } catch {
+      setLastRefresh(null);
+    }
+  };
+
+  useEffect(() => {
+    fetchLastRefresh();
+  }, []);
+
+  useEffect(() => {
+    if (progress.status === 'completed') {
+      fetchLastRefresh();
+    }
+  }, [progress.status]);
 
   const tabStatusMap: Record<string, string> = {
     '/trailblazer': 'overview',
@@ -84,18 +114,24 @@ export default function TrailBlazerLayout() {
             )}
           </div>
         )}
-        <div className="flex items-center justify-between">
+        <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
           <div>
-            <h1 className="text-3xl font-bold tracking-tight text-primary">TrailBlazer</h1>
-            <p className="text-muted-foreground">Market scanner with multi-factor scoring across fundamentals, sentiment, and technicals.</p>
+            <h1 className="text-2xl sm:text-3xl font-bold tracking-tight text-primary">TrailBlazer</h1>
+            <p className="text-sm sm:text-base text-muted-foreground">Market scanner with multi-factor scoring across fundamentals, sentiment, and technicals.</p>
+            {lastRefresh && (
+              <p className="mt-1 flex items-center gap-1.5 text-xs text-muted-foreground">
+                <Clock className="h-3.5 w-3.5" />
+                Last refreshed: {formatLastRefresh(lastRefresh)}
+              </p>
+            )}
           </div>
-          <Button onClick={handleRefresh} disabled={refreshing || progress.status === 'running'} variant="outline">
+          <Button onClick={handleRefresh} disabled={refreshing || progress.status === 'running'} variant="outline" className="min-h-[44px] shrink-0">
             <RefreshCw className={`h-4 w-4 mr-2 ${refreshing ? 'animate-spin' : ''}`} />
             {refreshing ? 'Starting...' : progress.status === 'running' ? 'Refreshing...' : 'Refresh Data'}
           </Button>
         </div>
 
-        <nav className="flex gap-1 border-b border-border">
+        <nav className="flex gap-1 border-b border-border overflow-x-auto -mx-4 px-4 sm:mx-0 sm:px-0 scrollbar-hide">
           {tabs.map((tab) => {
             const statusKey = tabStatusMap[tab.to];
             const status = (statusKey ? tabStatus[statusKey] ?? 'idle' : 'idle') as 'loading' | 'error' | 'idle';
@@ -106,7 +142,7 @@ export default function TrailBlazerLayout() {
                 end={tab.to === '/trailblazer'}
                 className={({ isActive }) =>
                   cn(
-                    'flex items-center gap-2 px-4 py-2 text-sm font-medium border-b-2 -mb-px transition-colors',
+                    'flex items-center gap-2 px-4 py-3 text-sm font-medium border-b-2 -mb-px transition-colors shrink-0 min-h-[44px]',
                     isActive
                       ? 'border-primary text-primary'
                       : 'border-transparent text-muted-foreground hover:text-foreground'
