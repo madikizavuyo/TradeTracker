@@ -969,6 +969,9 @@ namespace TradeHelperAPI.Migrations
 
                     SqlServerPropertyBuilderExtensions.UseIdentityColumn(b.Property<int>("Id"));
 
+                    b.Property<double?>("Close")
+                        .HasColumnType("float");
+
                     b.Property<DateTime>("Date")
                         .HasColumnType("datetime2");
 
@@ -984,6 +987,12 @@ namespace TradeHelperAPI.Migrations
                     b.Property<int>("InstrumentId")
                         .HasColumnType("int");
 
+                    b.Property<double?>("MACD")
+                        .HasColumnType("float");
+
+                    b.Property<double?>("MACDSignal")
+                        .HasColumnType("float");
+
                     b.Property<double?>("RSI")
                         .HasColumnType("float");
 
@@ -996,6 +1005,9 @@ namespace TradeHelperAPI.Migrations
                     b.Property<string>("Source")
                         .HasMaxLength(50)
                         .HasColumnType("nvarchar(50)");
+
+                    b.Property<double?>("StochasticK")
+                        .HasColumnType("float");
 
                     b.HasKey("Id");
 
@@ -1155,6 +1167,9 @@ namespace TradeHelperAPI.Migrations
                         .HasColumnType("nvarchar(20)");
 
                     b.Property<double>("COTScore")
+                        .HasColumnType("float");
+
+                    b.Property<double?>("CurrencyStrengthScore")
                         .HasColumnType("float");
 
                     b.Property<string>("DataSources")

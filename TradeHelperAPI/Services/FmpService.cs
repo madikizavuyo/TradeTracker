@@ -150,6 +150,7 @@ namespace TradeHelper.Services
             if (symbol == null) return results;
 
             var (price, avg50, avg200) = await FetchQuoteInternalAsync(symbol);
+            if (price > 0) results["Close"] = price;
             if (avg50.HasValue && avg50.Value != 0) results["EMA50"] = avg50.Value;
             if (avg200.HasValue && avg200.Value != 0) results["EMA200"] = avg200.Value;
 
@@ -183,6 +184,50 @@ namespace TradeHelper.Services
             if (symbol == null) return 0;
             var (price, _, _) = await FetchQuoteInternalAsync(symbol);
             return price > 0 ? price : 0;
+        }
+
+        /// <summary>Maps instrument to FMP symbol for historical prices. Commodities use liquid ETFs (USO, GLD, SLV) that work with stock historical API.</summary>
+        private static string? ToFmpHistoricalSymbol(string? instrumentName)
+        {
+            if (string.IsNullOrEmpty(instrumentName)) return null;
+            var upper = instrumentName.ToUpperInvariant().Replace("/", "").Replace("_", "").Replace(" ", "");
+            if (upper == "USOIL" || upper == "OIL") return "USO";   // US Oil Fund ETF - tracks WTI
+            if (upper.StartsWith("XAU")) return "GLD";              // Gold ETF
+            if (upper.StartsWith("XAG")) return "SLV";               // Silver ETF
+            return ToFmpSymbol(instrumentName);
+        }
+
+        /// <summary>Fetches historical daily closes (newest first) for correlation/relative strength. Oil uses USO proxy; commodities use ETF proxies.</summary>
+        public async Task<List<double>> FetchHistoricalClosesAsync(string instrumentName, int days = 90)
+        {
+            var symbol = ToFmpHistoricalSymbol(instrumentName);
+            if (symbol == null || string.IsNullOrEmpty(ApiKey)) return new List<double>();
+            if (await _rateLimit.IsBlockedAsync("FMP")) return new List<double>();
+
+            await ThrottleAsync();
+            var to = DateTime.UtcNow.Date;
+            var from = to.AddDays(-days);
+            var url = $"{BaseUrl}/api/v3/historical-price-full/{Uri.EscapeDataString(symbol)}?from={from:yyyy-MM-dd}&to={to:yyyy-MM-dd}&apikey={Uri.EscapeDataString(ApiKey)}";
+
+            try
+            {
+                var json = await _client.GetStringAsync(url);
+                using var doc = JsonDocument.Parse(json);
+                if (!doc.RootElement.TryGetProperty("historical", out var hist) || hist.ValueKind != JsonValueKind.Array)
+                    return new List<double>();
+                var closes = new List<double>();
+                foreach (var item in hist.EnumerateArray())
+                {
+                    if (item.TryGetProperty("close", out var c) && c.TryGetDouble(out var cv) && cv > 0)
+                        closes.Add(cv);
+                }
+                return closes;
+            }
+            catch (Exception ex)
+            {
+                _logger.LogDebug(ex, "FMP historical failed for {Symbol}", symbol);
+                return new List<double>();
+            }
         }
     }
 }

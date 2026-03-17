@@ -133,7 +133,8 @@ export interface LoginResponse {
 export interface AuthCheckResponse {
   authenticated: boolean;
   email: string;
-  claims: Array<{ type: string; value: string }>;
+  roles?: string[];
+  claims?: Array<{ type: string; value: string }>;
 }
 
 // Prediction types
@@ -158,6 +159,7 @@ export interface TrailBlazerScore {
   retailSentimentScore: number;
   newsSentimentScore: number;
   economicScore: number;
+  currencyStrengthScore?: number;
   dataSources?: string | null;
   dateComputed: string;
 }

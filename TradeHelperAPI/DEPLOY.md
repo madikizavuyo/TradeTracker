@@ -51,7 +51,7 @@ dotnet publish -c Release -o publish-out
 | Category | Path / files |
 |----------|--------------|
 | **Executable** | `TradeHelperAPI.exe`, `TradeHelperAPI.dll`, `TradeHelperAPI.pdb` |
-| **Config** | `web.config`, `appsettings.json`, `appsettings.Production.json`, `appsettings.Development.json` |
+| **Config** | `web.config` (required for IIS; copied from project root), `appsettings.json`, `appsettings.Production.json`, `appsettings.Development.json` |
 | **Runtime** | `*.dll`, `*.exe` (ASP.NET Core, dependencies) |
 | **Static** | `wwwroot/index.html`, `wwwroot/assets/*`, `wwwroot/vite.svg` |
 | **Logs** | `logs/.gitkeep` (folder for stdout) |

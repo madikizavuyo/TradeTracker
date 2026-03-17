@@ -18,8 +18,11 @@ import TrailBlazerLayout from './pages/TrailBlazerLayout';
 import { TrailBlazerRefreshProvider } from './contexts/TrailBlazerRefreshContext';
 import TrailBlazerScanner from './pages/TrailBlazerScanner';
 import TrailBlazerStrength from './pages/TrailBlazerStrength';
+import TrailBlazerRelativeStrength from './pages/TrailBlazerRelativeStrength';
 import TrailBlazerNewsSentiment from './pages/TrailBlazerNewsSentiment';
 import TrailBlazerBiasChanges from './pages/TrailBlazerBiasChanges';
+import AdminErrorLogs from './pages/AdminErrorLogs';
+import { AdminRoute } from './components/AdminRoute';
 
 const router = createBrowserRouter(
   [
@@ -118,6 +121,7 @@ const router = createBrowserRouter(
             { index: true, element: <TrailBlazer /> },
             { path: 'scanner', element: <TrailBlazerScanner /> },
             { path: 'strength', element: <TrailBlazerStrength /> },
+            { path: 'relative-strength', element: <TrailBlazerRelativeStrength /> },
             { path: 'news-sentiment', element: <TrailBlazerNewsSentiment /> },
             { path: 'bias-changes', element: <TrailBlazerBiasChanges /> },
           ],
@@ -128,6 +132,14 @@ const router = createBrowserRouter(
             <ProtectedRoute>
               <AIInsights />
             </ProtectedRoute>
+          ),
+        },
+        {
+          path: '/admin/error-logs',
+          element: (
+            <AdminRoute>
+              <AdminErrorLogs />
+            </AdminRoute>
           ),
         },
         { path: '*', element: <Navigate to="/" replace /> },

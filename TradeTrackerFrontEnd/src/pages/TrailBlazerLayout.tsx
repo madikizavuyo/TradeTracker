@@ -1,7 +1,7 @@
 import { Outlet, NavLink } from 'react-router-dom';
 import { AppLayout } from '@/components/AppLayout';
 import { Button } from '@/components/ui/button';
-import { Filter, LayoutDashboard, BarChart3, Newspaper, RefreshCw, GitCompare, Clock } from 'lucide-react';
+import { Filter, LayoutDashboard, BarChart3, Newspaper, RefreshCw, GitCompare, Clock, Activity } from 'lucide-react';
 import { StatusDot } from '@/components/StatusDot';
 import { cn } from '@/lib/utils';
 import { useState, useEffect } from 'react';
@@ -12,6 +12,7 @@ const tabs = [
   { to: '/trailblazer', label: 'Overview', icon: LayoutDashboard },
   { to: '/trailblazer/scanner', label: 'Asset Scanner', icon: Filter },
   { to: '/trailblazer/strength', label: 'Strength', icon: BarChart3 },
+  { to: '/trailblazer/relative-strength', label: 'Relative Strength', icon: Activity },
   { to: '/trailblazer/news-sentiment', label: 'News Sentiment', icon: Newspaper },
   { to: '/trailblazer/bias-changes', label: 'Bias Changes', icon: GitCompare },
 ];
@@ -53,6 +54,7 @@ export default function TrailBlazerLayout() {
     '/trailblazer': 'overview',
     '/trailblazer/scanner': 'scanner',
     '/trailblazer/strength': 'strength',
+    '/trailblazer/relative-strength': 'relative-strength',
     '/trailblazer/news-sentiment': 'news-sentiment',
     '/trailblazer/bias-changes': 'bias-changes',
   };

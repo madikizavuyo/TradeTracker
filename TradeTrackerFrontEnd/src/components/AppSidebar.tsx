@@ -1,10 +1,10 @@
 import { Link, useLocation, useNavigate } from 'react-router-dom';
-import { Home, TrendingUp, Target, FileText, LogOut, User, Settings, Upload, Crosshair, Brain, X } from 'lucide-react';
+import { Home, TrendingUp, Target, FileText, LogOut, User, Settings, Upload, Crosshair, Brain, FileWarning, X } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { cn } from '@/lib/utils';
 import { useAuth } from '@/lib/AuthContext';
 
-const navigation = [
+const baseNavigation = [
   { name: 'Dashboard', href: '/dashboard', icon: Home },
   { name: 'Trades', href: '/trades', icon: TrendingUp },
   { name: 'Strategies', href: '/strategies', icon: Target },
@@ -23,7 +23,12 @@ interface AppSidebarProps {
 export function AppSidebar({ open = false, onClose }: AppSidebarProps) {
   const location = useLocation();
   const navigate = useNavigate();
-  const { user, logout } = useAuth();
+  const { user, logout, isAdmin } = useAuth();
+
+  const navigation = [
+    ...baseNavigation,
+    ...(isAdmin ? [{ name: 'Error Logs', href: '/admin/error-logs', icon: FileWarning }] : []),
+  ];
 
   const handleLogout = async () => {
     await logout();

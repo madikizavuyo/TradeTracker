@@ -210,6 +210,67 @@ Output format (strict):
 
             return null;
         }
+
+        /// <summary>Analyzes global economic news and returns currency strength scores (1-10) per currency. Used for 80% of currency strength.</summary>
+        public async Task<Dictionary<string, double>?> GenerateCurrencyStrengthFromNewsAsync(IEnumerable<string> headlineSummaries)
+        {
+            var headlines = headlineSummaries.Take(15).ToList();
+            if (headlines.Count == 0) return null;
+
+            var headlinesText = string.Join("\n", headlines.Select((h, i) => $"{i + 1}. {h}"));
+
+            var prompt = $@"Analyze these global economic/news headlines and rate each major currency's strength (1=weak, 10=strong) based on how current events affect them.
+
+HEADLINES:
+{headlinesText}
+
+Currencies to rate: USD, EUR, GBP, JPY, AUD, NZD, CAD, CHF, ZAR, CNY, SEK
+
+Consider: geopolitical events, oil/commodity prices, inflation, trade wars, central bank policy, safe-haven flows, commodity exporter benefits (CAD, AUD, ZAR), etc.
+
+Reply ONLY with a JSON object, no other text. Example format:
+{{""USD"":6.5,""EUR"":5.2,""GBP"":5.8,""JPY"":6.0,""AUD"":5.5,""NZD"":5.3,""CAD"":6.2,""CHF"":6.8,""ZAR"":4.5,""CNY"":5.0,""SEK"":5.2}}";
+
+            try
+            {
+                var requestBody = new { contents = new[] { new { parts = new[] { new { text = prompt } } } }, generationConfig = new { maxOutputTokens = 300, temperature = 0.3 } };
+                var json = JsonSerializer.Serialize(requestBody);
+                var content = new StringContent(json, Encoding.UTF8, "application/json");
+                var model = _configuration["Google:AnalysisModel"] ?? _configuration["Google:GeminiModel"] ?? "gemini-2.0-flash";
+                var url = $"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={_apiKey}";
+                var response = await _httpClient.PostAsync(url, content);
+
+                if (!response.IsSuccessStatusCode) return null;
+
+                var responseContent = await response.Content.ReadAsStringAsync();
+                var responseJson = JsonDocument.Parse(responseContent);
+                var candidates = responseJson.RootElement.GetProperty("candidates");
+                if (candidates.GetArrayLength() == 0) return null;
+
+                var text = candidates[0].GetProperty("content").GetProperty("parts")[0].GetProperty("text").GetString()?.Trim();
+                if (string.IsNullOrEmpty(text)) return null;
+
+                // Extract JSON (handle markdown code blocks)
+                var jsonStart = text.IndexOf('{');
+                var jsonEnd = text.LastIndexOf('}');
+                if (jsonStart < 0 || jsonEnd <= jsonStart) return null;
+                text = text.Substring(jsonStart, jsonEnd - jsonStart + 1);
+
+                var result = new Dictionary<string, double>(StringComparer.OrdinalIgnoreCase);
+                using var doc = JsonDocument.Parse(text);
+                foreach (var prop in doc.RootElement.EnumerateObject())
+                {
+                    if (prop.Value.TryGetDouble(out var val))
+                        result[prop.Name] = Math.Clamp(val, 1.0, 10.0);
+                }
+                return result.Count > 0 ? result : null;
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "GenerateCurrencyStrengthFromNewsAsync failed");
+                return null;
+            }
+        }
     }
 
     /// <summary>Context for AI instrument analysis.</summary>

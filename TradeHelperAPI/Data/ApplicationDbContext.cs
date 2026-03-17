@@ -77,7 +77,12 @@ namespace TradeHelper.Data
                 .HasIndex(m => new { m.Symbol, m.DateCollected });
 
             builder.Entity<RetailSentimentSnapshot>()
+                .Property(r => r.Id).ValueGeneratedOnAdd();
+            builder.Entity<RetailSentimentSnapshot>()
                 .HasIndex(r => new { r.InstrumentId, r.DateCollected });
+
+            builder.Entity<UserLog>()
+                .Property(u => u.Id).ValueGeneratedOnAdd();
 
             builder.Entity<ApplicationLog>()
                 .HasIndex(a => a.Timestamp);

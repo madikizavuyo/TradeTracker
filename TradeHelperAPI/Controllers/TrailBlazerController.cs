@@ -4,6 +4,7 @@ using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using TradeHelper.Data;
+using TradeHelper.Models;
 using TradeHelper.Services;
 
 namespace TradeHelper.Controllers
@@ -72,6 +73,7 @@ namespace TradeHelper.Controllers
                     s.RetailSentimentScore,
                     s.NewsSentimentScore,
                     s.EconomicScore,
+                    s.CurrencyStrengthScore,
                     s.DataSources,
                     s.DateComputed,
                     s.TechnicalDataDateCollected
@@ -279,6 +281,100 @@ namespace TradeHelper.Controllers
             return Ok(result);
         }
 
+        /// <summary>Returns geopolitical/narrative currency overrides (e.g. CAD +0.5 for oil strength). Admin can set via POST.</summary>
+        [Authorize(Roles = "Admin")]
+        [HttpGet("currency-overrides")]
+        public async Task<IActionResult> GetCurrencyOverrides()
+        {
+            const int prefixLen = 17; // "CurrencyOverride_".Length
+            var raw = await _context.SystemSettings
+                .Where(s => s.Key.StartsWith("CurrencyOverride_"))
+                .Select(s => new { s.Key, s.Value })
+                .ToListAsync();
+            var settings = raw.Select(s => new { currency = s.Key.Substring(prefixLen), value = s.Value }).ToList();
+            return Ok(settings);
+        }
+
+        /// <summary>Sets a currency override for scoring (e.g. CAD +0.5 when strong due to oil/geopolitics). Value: -2 to +2.</summary>
+        [Authorize(Roles = "Admin")]
+        [HttpPost("currency-overrides")]
+        public async Task<IActionResult> SetCurrencyOverride([FromBody] CurrencyOverrideRequest req)
+        {
+            if (req == null || string.IsNullOrWhiteSpace(req.Currency))
+                return BadRequest(new { message = "Currency is required (e.g. CAD, USD)" });
+            var ccy = req.Currency.Trim().ToUpperInvariant();
+            if (ccy.Length != 3)
+                return BadRequest(new { message = "Currency must be 3 letters (e.g. CAD)" });
+            var val = Math.Clamp(req.Value, -2.0, 2.0);
+            var key = $"CurrencyOverride_{ccy}";
+            var setting = await _context.SystemSettings.FirstOrDefaultAsync(s => s.Key == key);
+            var now = DateTime.UtcNow;
+            if (setting != null)
+            {
+                setting.Value = val.ToString("F2", System.Globalization.CultureInfo.InvariantCulture);
+                setting.UpdatedAt = now;
+            }
+            else
+            {
+                _context.SystemSettings.Add(new SystemSetting { Key = key, Value = val.ToString("F2", System.Globalization.CultureInfo.InvariantCulture), UpdatedAt = now });
+            }
+            await _context.SaveChangesAsync();
+            return Ok(new { currency = ccy, value = val, message = $"Override set. Next TrailBlazer refresh will apply {ccy} {(val >= 0 ? "+" : "")}{val:F2} to fundamental scoring." });
+        }
+
+        /// <summary>Returns currency strength scores. 80% from global economic news analysis (Gemini), 20% from fundamentals (GDP, CPI, etc). Higher = stronger.</summary>
+        [HttpGet("currency-strength")]
+        public async Task<IActionResult> GetCurrencyStrength()
+        {
+            var latestDate = await _context.EconomicHeatmapEntries
+                .MaxAsync(e => (DateTime?)e.DateCollected);
+
+            var batchCutoff = latestDate.HasValue ? latestDate.Value.AddMinutes(-10) : DateTime.MinValue;
+            var entries = latestDate.HasValue
+                ? await _context.EconomicHeatmapEntries.Where(e => e.DateCollected >= batchCutoff).ToListAsync()
+                : new List<TradeHelper.Models.EconomicHeatmapEntry>();
+
+            var fundamentalByCurrency = entries
+                .GroupBy(e => e.Currency)
+                .ToDictionary(g => g.Key, g =>
+                {
+                    var pos = g.Count(x => string.Equals(x.Impact, "Positive", StringComparison.OrdinalIgnoreCase));
+                    var neg = g.Count(x => string.Equals(x.Impact, "Negative", StringComparison.OrdinalIgnoreCase));
+                    var total = g.Count();
+                    var raw = total > 0 ? 5.0 + (pos - neg) * 1.5 : 5.0;
+                    return (strength: Math.Clamp(raw, 1.0, 10.0), pos, neg, total);
+                });
+
+            Dictionary<string, double>? newsScores = null;
+            var newsSetting = await _context.SystemSettings.FirstOrDefaultAsync(s => s.Key == "CurrencyStrengthNewsCache");
+            var updatedSetting = await _context.SystemSettings.FirstOrDefaultAsync(s => s.Key == "CurrencyStrengthNewsUpdatedAt");
+            if (newsSetting != null && !string.IsNullOrEmpty(newsSetting.Value) && updatedSetting != null
+                && DateTime.TryParse(updatedSetting.Value, null, System.Globalization.DateTimeStyles.RoundtripKind, out var updated)
+                && (DateTime.UtcNow - updated).TotalHours < 24)
+            {
+                try
+                {
+                    newsScores = System.Text.Json.JsonSerializer.Deserialize<Dictionary<string, double>>(newsSetting.Value);
+                }
+                catch { /* ignore parse errors */ }
+            }
+
+            var allCurrencies = fundamentalByCurrency.Keys.Union(newsScores != null ? newsScores.Keys : Enumerable.Empty<string>()).Distinct().ToList();
+            var byCurrency = allCurrencies.Select(ccy =>
+            {
+                var (fundStr, pos, neg, total) = fundamentalByCurrency.TryGetValue(ccy, out var f) ? f : (5.0, 0, 0, 0);
+                var newsStr = newsScores != null && newsScores.TryGetValue(ccy, out var n) ? n : (double?)null;
+                var strength = newsStr.HasValue
+                    ? Math.Clamp(0.8 * newsStr.Value + 0.2 * fundStr, 1.0, 10.0)
+                    : fundStr;
+                return new { currency = ccy, strength = Math.Round(strength, 1), positiveCount = pos, negativeCount = neg, totalIndicators = total, hasNewsAnalysis = newsStr.HasValue };
+            })
+                .OrderByDescending(x => x.strength)
+                .ToList();
+
+            return Ok(byCurrency);
+        }
+
         [HttpGet("heatmap")]
         public async Task<IActionResult> GetHeatmap()
         {
@@ -304,6 +400,46 @@ namespace TradeHelper.Controllers
                 .ToListAsync();
 
             return Ok(entries);
+        }
+
+        /// <summary>Rolling correlation (30/60 days) between USOIL and US500/US30. Uses FMP historical prices.</summary>
+        [HttpGet("correlation/oil-index")]
+        public async Task<IActionResult> GetOilIndexCorrelation([FromQuery] int? days30, [FromQuery] int? days60)
+        {
+            var window30 = days30 ?? 30;
+            var window60 = days60 ?? 60;
+            var result = await _dataService.ComputeOilIndexCorrelationAsync(window30, window60);
+            return Ok(result);
+        }
+
+        /// <summary>Returns refresh-related errors and warnings from ApplicationLogs. Use for diagnosing TrailBlazer refresh failures.</summary>
+        [HttpGet("logs/refresh-errors")]
+        public async Task<IActionResult> GetRefreshLogs([FromQuery] int? hoursBack, [FromQuery] int? limit)
+        {
+            var cutoff = DateTime.UtcNow.AddHours(-(hoursBack ?? 168));
+            var take = Math.Min(limit ?? 100, 200);
+            var logs = await _context.ApplicationLogs
+                .Where(l => l.Timestamp >= cutoff && l.Level != "Debug")
+                .Where(l =>
+                    l.Category.Contains("TrailBlazer") || l.Category.Contains("TwelveData") || l.Category.Contains("FmpService") ||
+                    l.Category.Contains("MarketStack") || l.Category.Contains("Eodhd") || l.Category.Contains("iTick") ||
+                    l.Category.Contains("ApiRateLimit") || l.Category.Contains("MLModel") ||
+                    l.Message.Contains("refresh") || l.Message.Contains("blocked") || l.Message.Contains("429") ||
+                    l.Message.Contains("failed") || l.Message.Contains("rate limit"))
+                .OrderByDescending(l => l.Timestamp)
+                .Take(take)
+                .Select(l => new { l.Id, l.Timestamp, l.Level, l.Category, l.Message, l.Exception })
+                .ToListAsync();
+            return Ok(logs);
+        }
+
+        /// <summary>Relative strength: assets ranked by % price change over 5 and 20 days.</summary>
+        [HttpGet("relative-strength")]
+        public async Task<IActionResult> GetRelativeStrength([FromQuery] int? days5, [FromQuery] int? days20)
+        {
+            var ranking = await _dataService.GetRelativeStrengthRankingAsync(days5 ?? 5, days20 ?? 20);
+            var result = ranking.Select(r => new { symbol = r.symbol, pctChange5d = Math.Round(r.pctChange5d, 2), pctChange20d = Math.Round(r.pctChange20d, 2) }).ToList();
+            return Ok(result);
         }
 
         /// <summary>Test CFTC parser without saving. Returns count of parsed reports. Dev only.</summary>
@@ -767,9 +903,10 @@ namespace TradeHelper.Controllers
             });
         }
 
+        /// <summary>Manually trigger TrailBlazer refresh. useBrave=true (default) forces Brave for currency strength so it runs on demand; 24h block is set after refresh completes.</summary>
         [Authorize(Roles = "Admin")]
         [HttpPost("refresh")]
-        public Task<IActionResult> Refresh()
+        public Task<IActionResult> Refresh([FromQuery] bool useBrave = true)
         {
             try
             {
@@ -779,9 +916,10 @@ namespace TradeHelper.Controllers
 
                 if (bgService != null)
                 {
-                    _logger.LogInformation("TrailBlazer: Manual refresh triggered via API");
+                    TrailBlazerDataService.SetForceBraveForRefresh(useBrave);
+                    _logger.LogInformation("TrailBlazer: Manual refresh triggered via API (useBrave={UseBrave})", useBrave);
                     _ = Task.Run(() => bgService.RunRefreshCycleAsync());
-                    return Task.FromResult<IActionResult>(Ok(new { message = "TrailBlazer refresh started" }));
+                    return Task.FromResult<IActionResult>(Ok(new { message = "TrailBlazer refresh started", useBrave }));
                 }
 
                 _logger.LogError("TrailBlazer: Refresh failed - background service not found");
@@ -793,5 +931,11 @@ namespace TradeHelper.Controllers
                 return Task.FromResult<IActionResult>(StatusCode(500, new { message = $"Refresh failed: {ex.Message}" }));
             }
         }
+    }
+
+    public class CurrencyOverrideRequest
+    {
+        public string Currency { get; set; } = "";
+        public double Value { get; set; }
     }
 }

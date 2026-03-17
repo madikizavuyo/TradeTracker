@@ -281,6 +281,40 @@ if (args.Contains("run-fix-technical-indicators") || args.Contains("--run-fix-te
     return;
 }
 
+// Standalone: fix UserLogs.Id to be IDENTITY (production: dotnet run -- run-fix-userlogs --environment Production)
+if (args.Contains("run-fix-userlogs") || args.Contains("--run-fix-userlogs"))
+{
+    using var scope = app.Services.CreateScope();
+    var db = scope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
+    var logger = scope.ServiceProvider.GetRequiredService<ILogger<Program>>();
+    var sql = @"
+        IF EXISTS (SELECT 1 FROM sys.tables WHERE name = 'UserLogs')
+        AND NOT EXISTS (
+            SELECT 1 FROM sys.identity_columns ic
+            JOIN sys.columns c ON ic.object_id = c.object_id AND ic.column_id = c.column_id
+            JOIN sys.tables t ON c.object_id = t.object_id
+            WHERE t.name = 'UserLogs' AND c.name = 'Id'
+        )
+        BEGIN
+            CREATE TABLE [dbo].[UserLogs_new] (
+                [Id] int NOT NULL IDENTITY(1,1),
+                [Email] nvarchar(max) NOT NULL,
+                [Action] nvarchar(max) NOT NULL,
+                [Timestamp] datetime2 NOT NULL,
+                CONSTRAINT [PK_UserLogs_new] PRIMARY KEY ([Id])
+            );
+            INSERT INTO [dbo].[UserLogs_new] ([Email], [Action], [Timestamp])
+            SELECT [Email], [Action], [Timestamp]
+            FROM [dbo].[UserLogs];
+            DROP TABLE [dbo].[UserLogs];
+            EXEC sp_rename 'dbo.UserLogs_new', 'UserLogs';
+            EXEC sp_rename 'PK_UserLogs_new', 'PK_UserLogs';
+        END";
+    await db.Database.ExecuteSqlRawAsync(sql);
+    logger.LogInformation("FixUserLogsIdentity applied successfully.");
+    return;
+}
+
 // Standalone: load technical data from Twelve Data only (e.g. dotnet run -- load-technical)
 if (args.Contains("load-technical") || args.Contains("--load-technical") || args.Contains("load-twelve-data") || args.Contains("--load-twelve-data"))
 {
@@ -353,6 +387,34 @@ if (args.Contains("clear-api-block") || args.Contains("--clear-api-block"))
             logger.LogInformation("Removed API block for {Api}.", apiName);
         }
     }
+    return;
+}
+
+// Standalone: list users and TrailBlazer refresh count today (e.g. dotnet run -- inspect-users --environment Production)
+if (args.Contains("inspect-users") || args.Contains("--inspect-users"))
+{
+    using var scope = app.Services.CreateScope();
+    var db = scope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
+    var logger = scope.ServiceProvider.GetRequiredService<ILogger<Program>>();
+    logger.LogInformation("=== Users and refresh runs (production) ===\n");
+
+    var users = await db.Users
+        .OrderBy(u => u.Email)
+        .Select(u => new { u.UserName, u.Email })
+        .ToListAsync();
+    logger.LogInformation("Users ({Count}):", users.Count);
+    foreach (var u in users)
+        logger.LogInformation("  UserName: {UserName} | Email: {Email}", u.UserName ?? "—", u.Email ?? "—");
+
+    var todayStart = DateTime.UtcNow.Date;
+    var refreshRuns = await db.UserLogs
+        .Where(l => l.Email == "system@trailblazer" && l.Action.StartsWith("TrailBlazer refresh"))
+        .Where(l => l.Timestamp >= todayStart)
+        .OrderByDescending(l => l.Timestamp)
+        .ToListAsync();
+    logger.LogInformation("\nTrailBlazer refresh runs today: {Count}", refreshRuns.Count);
+    foreach (var r in refreshRuns.Take(20))
+        logger.LogInformation("  {Time:HH:mm:ss} UTC | {Action}", r.Timestamp, r.Action.Length > 60 ? r.Action[..60] + "..." : r.Action);
     return;
 }
 

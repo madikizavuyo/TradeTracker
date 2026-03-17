@@ -27,6 +27,7 @@ Add these to `appsettings.Development.json` or environment variables:
 | `TrailBlazer:FmpApiKey` | Technical fallback. https://site.financialmodelingprep.com/ |
 | `TrailBlazer:NasdaqDataLinkApiKey` | Technical fallback. https://data.nasdaq.com/ |
 | `TrailBlazer:MyFXBookEmail` / `MyFXBookPassword` | Retail sentiment. https://www.myfxbook.com/ |
+| `TrailBlazer:MyFXBookSession` | Optional. Use session ID directly instead of login (e.g. from browser cookie). Takes precedence over email/password. |
 | `TrailBlazer:ExchangeRateApiKey` | Currency conversion. https://www.exchangerate-api.com/ |
 
 ## How to configure

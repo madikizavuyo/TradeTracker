@@ -2,7 +2,8 @@ import React, { useCallback, useEffect, useState } from 'react';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { StatusDot } from '@/components/StatusDot';
-import { Newspaper, ExternalLink, ChevronDown, ChevronRight } from 'lucide-react';
+import { Newspaper, ExternalLink, ChevronDown, ChevronRight, Search } from 'lucide-react';
+import { Input } from '@/components/ui/input';
 import { api } from '@/lib/api';
 import { useTrailBlazerRefresh } from '@/contexts/TrailBlazerRefreshContext';
 import { TrailBlazerScore, TrailBlazerNewsItem } from '@/lib/types';
@@ -13,6 +14,7 @@ export default function TrailBlazerNewsSentiment() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [expandedId, setExpandedId] = useState<number | null>(null);
+  const [searchQuery, setSearchQuery] = useState('');
   const [articles, setArticles] = useState<TrailBlazerNewsItem[]>([]);
   const [articlesLoading, setArticlesLoading] = useState(false);
 
@@ -113,6 +115,15 @@ export default function TrailBlazerNewsSentiment() {
         <p className="text-sm text-muted-foreground">
           Instruments ranked by news sentiment score (1–10). Derived from headline analysis via Brave/Finnhub. Higher = more bullish news tone.
         </p>
+        <div className="relative mt-2 w-48">
+          <Search className="absolute left-2 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
+          <Input
+            placeholder="Search instruments..."
+            value={searchQuery}
+            onChange={(e) => setSearchQuery(e.target.value)}
+            className="pl-8 h-8 text-sm"
+          />
+        </div>
       </CardHeader>
       <CardContent>
         {scores.length === 0 ? (
@@ -132,7 +143,9 @@ export default function TrailBlazerNewsSentiment() {
                 </tr>
               </thead>
               <tbody>
-                {scores.map((s, idx) => (
+                {scores
+                  .filter(s => !searchQuery.trim() || s.instrumentName.toLowerCase().includes(searchQuery.trim().toLowerCase()))
+                  .map((s, idx) => (
                   <React.Fragment key={s.id}>
                     <tr
                       className="border-b border-border/50 hover:bg-accent/50 cursor-pointer transition-colors"

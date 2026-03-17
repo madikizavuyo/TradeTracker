@@ -28,6 +28,9 @@ namespace TradeHelper.Models
         public double RetailShortPct { get; set; } = 50;
         public double EconomicScore { get; set; }
 
+        /// <summary>Currency strength component (80% news analysis + 20% fundamentals). Null when N/A (not included in calculations).</summary>
+        public double? CurrencyStrengthScore { get; set; }
+
         [MaxLength(2000)]
         public string? DataSources { get; set; }
 

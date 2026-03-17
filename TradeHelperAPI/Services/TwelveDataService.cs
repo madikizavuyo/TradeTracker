@@ -173,6 +173,33 @@ namespace TradeHelper.Services
             return ExtractLatestValue(doc.RootElement, "ema");
         }
 
+        /// <summary>Fetches MACD for a symbol. Returns (macd, macdSignal) or null.</summary>
+        public async Task<(double macd, double signal)?> FetchMACDAsync(string symbol)
+        {
+            var tdSymbol = ToTwelveDataSymbol(symbol);
+            if (tdSymbol == null) return null;
+
+            using var doc = await GetAsync($"/macd?symbol={Uri.EscapeDataString(tdSymbol)}&interval=1day&series_type=close&fast_period=12&slow_period=26&signal_period=9");
+            if (doc == null) return null;
+
+            var macd = ExtractLatestValue(doc.RootElement, "macd");
+            var signal = ExtractLatestValue(doc.RootElement, "macd_signal");
+            if (macd.HasValue && signal.HasValue) return (macd.Value, signal.Value);
+            return null;
+        }
+
+        /// <summary>Fetches Stochastic slow %K for a symbol.</summary>
+        public async Task<double?> FetchStochasticAsync(string symbol)
+        {
+            var tdSymbol = ToTwelveDataSymbol(symbol);
+            if (tdSymbol == null) return null;
+
+            using var doc = await GetAsync($"/stoch?symbol={Uri.EscapeDataString(tdSymbol)}&interval=1day&fast_k_period=14&slow_k_period=1&slow_d_period=3");
+            if (doc == null) return null;
+
+            return ExtractLatestValue(doc.RootElement, "slow_k");
+        }
+
         private static double? ExtractLatestValue(JsonElement root, string key)
         {
             if (!root.TryGetProperty("values", out var values) || values.ValueKind != JsonValueKind.Array || values.GetArrayLength() == 0)
@@ -184,7 +211,7 @@ namespace TradeHelper.Services
             return double.TryParse(str, System.Globalization.NumberStyles.Any, System.Globalization.CultureInfo.InvariantCulture, out var d) ? d : null;
         }
 
-        /// <summary>Fetches technical indicators (RSI, SMA14, SMA50, EMA50, EMA200) in one batch. Uses multiple API calls with throttling.</summary>
+        /// <summary>Fetches technical indicators (RSI, SMA14, SMA50, EMA50, EMA200, MACD, Stochastic) in one batch. Uses multiple API calls with throttling.</summary>
         public async Task<Dictionary<string, double>> FetchTechnicalIndicatorsAsync(string symbol)
         {
             var results = new Dictionary<string, double>(StringComparer.OrdinalIgnoreCase)
@@ -193,7 +220,10 @@ namespace TradeHelper.Services
                 ["SMA14"] = 0,
                 ["SMA50"] = 0,
                 ["EMA50"] = 0,
-                ["EMA200"] = 0
+                ["EMA200"] = 0,
+                ["MACD"] = 0,
+                ["MACDSignal"] = 0,
+                ["StochasticK"] = 50
             };
 
             var rsi = await FetchRSIAsync(symbol, 14);
@@ -210,6 +240,16 @@ namespace TradeHelper.Services
 
             var ema200 = await FetchEMAAsync(symbol, 200);
             if (ema200.HasValue) results["EMA200"] = ema200.Value;
+
+            var macd = await FetchMACDAsync(symbol);
+            if (macd.HasValue)
+            {
+                results["MACD"] = macd.Value.macd;
+                results["MACDSignal"] = macd.Value.signal;
+            }
+
+            var stoch = await FetchStochasticAsync(symbol);
+            if (stoch.HasValue) results["StochasticK"] = stoch.Value;
 
             return results;
         }

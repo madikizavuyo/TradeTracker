@@ -381,6 +381,12 @@ class ApiService {
     return response.data;
   }
 
+  /** Currency strength derived from economic heatmap (CAD, USD, ZAR, etc.). Higher = stronger. */
+  async getTrailBlazerCurrencyStrength(): Promise<{ currency: string; strength: number; positiveCount: number; negativeCount: number; totalIndicators: number }[]> {
+    const response = await this.client.get('/TrailBlazer/currency-strength');
+    return response.data;
+  }
+
   async getTrailBlazerCOT() {
     const response = await this.client.get('/TrailBlazer/cot');
     return response.data;
@@ -408,8 +414,9 @@ class ApiService {
     return response.data;
   }
 
-  async refreshTrailBlazer() {
-    const response = await this.client.post('/TrailBlazer/refresh');
+  /** Manual refresh. useBrave=true (default) forces Brave for currency strength so it runs on demand; 24h cooldown is set after refresh. */
+  async refreshTrailBlazer(useBrave = true) {
+    const response = await this.client.post(`/TrailBlazer/refresh?useBrave=${useBrave}`);
     return response.data;
   }
 
@@ -455,6 +462,40 @@ class ApiService {
   /** Instruments that changed Bias recently, with when the change happened. */
   async getTrailBlazerBiasChanges(lastHours = 48, limit = 20): Promise<TrailBlazerBiasChange[]> {
     const response = await this.client.get(`/TrailBlazer/bias-changes?lastHours=${lastHours}&limit=${limit}`);
+    return response.data;
+  }
+
+  /** Relative strength: assets ranked by % price change over 5 and 20 days. */
+  async getTrailBlazerRelativeStrength(days5 = 5, days20 = 20): Promise<{ symbol: string; pctChange5d: number; pctChange20d: number }[]> {
+    const response = await this.client.get(`/TrailBlazer/relative-strength?days5=${days5}&days20=${days20}`);
+    return response.data;
+  }
+
+  /** Rolling correlation (30/60 days) between USOIL and US500/US30. */
+  async getTrailBlazerOilIndexCorrelation(days30 = 30, days60 = 60): Promise<{
+    usoilUs500_30d: number | null;
+    usoilUs500_60d: number | null;
+    usoilUs30_30d: number | null;
+    usoilUs30_60d: number | null;
+    dataPoints30?: number;
+    dataPoints60?: number;
+    message?: string;
+  }> {
+    const response = await this.client.get(`/TrailBlazer/correlation/oil-index?days30=${days30}&days60=${days60}`);
+    return response.data;
+  }
+
+  /** Admin: error logs from ApplicationLogs (last 5 days, pagination). Admin role required. */
+  async getAdminErrorLogs(page = 1, pageSize = 50, level?: string): Promise<{
+    items: { id: number; timestamp: string; level: string; category: string; message: string; exception?: string }[];
+    totalCount: number;
+    page: number;
+    pageSize: number;
+    totalPages: number;
+  }> {
+    const params = new URLSearchParams({ page: String(page), pageSize: String(pageSize) });
+    if (level) params.append('level', level);
+    const response = await this.client.get(`/admin/error-logs?${params.toString()}`);
     return response.data;
   }
 

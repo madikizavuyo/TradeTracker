@@ -61,7 +61,11 @@ namespace TradeHelper.Services
             finally { _throttle.Release(); }
         }
 
-        private async Task<List<double>?> FetchEodClosesAsync(string symbol, int days = 260)
+        /// <summary>OHLC bar: index 0 = newest (most recent).</summary>
+        private record OhlcBar(double Open, double High, double Low, double Close);
+
+        /// <summary>Fetches EOD OHLC. Returns newest-first. One API call.</summary>
+        private async Task<List<OhlcBar>?> FetchEodOhlcAsync(string symbol, int days = 260)
         {
             if (string.IsNullOrEmpty(ApiKey))
             {
@@ -96,14 +100,17 @@ namespace TradeHelper.Services
                     doc.Dispose();
                     return null;
                 }
-                var closes = new List<double>();
+                var bars = new List<OhlcBar>();
                 foreach (var item in data.EnumerateArray())
                 {
-                    if (item.TryGetProperty("close", out var close) && close.TryGetDouble(out var c))
-                        closes.Add(c);
+                    if (item.TryGetProperty("open", out var o) && o.TryGetDouble(out var open) &&
+                        item.TryGetProperty("high", out var h) && h.TryGetDouble(out var high) &&
+                        item.TryGetProperty("low", out var l) && l.TryGetDouble(out var low) &&
+                        item.TryGetProperty("close", out var c) && c.TryGetDouble(out var close))
+                        bars.Add(new OhlcBar(open, high, low, close));
                 }
                 doc.Dispose();
-                return closes.Count >= 14 ? closes : null;
+                return bars.Count >= 14 ? bars : null;
             }
             catch (Exception ex)
             {
@@ -157,7 +164,46 @@ namespace TradeHelper.Services
             return ema;
         }
 
-        /// <summary>Fetches EOD and computes RSI(14), SMA14, SMA50, EMA50, EMA200. Returns same shape as Twelve Data for scoring.</summary>
+        /// <summary>MACD = EMA12 - EMA26, signal = EMA9 of MACD. Closes newest-first. Returns (macd, signal) or null if insufficient data.</summary>
+        private static (double macd, double signal)? MacdFromCloses(IReadOnlyList<double> closes)
+        {
+            if (closes.Count < 35) return null; // 26 for slow EMA + 9 for signal
+            var chrono = closes.Reverse().ToList();
+            var macdLine = new List<double>();
+            for (var i = 25; i < chrono.Count; i++)
+            {
+                var slice = chrono.Take(i + 1).Reverse().ToList();
+                var e12 = Ema(slice, 12);
+                var e26 = Ema(slice, 26);
+                macdLine.Add(e12 - e26);
+            }
+            if (macdLine.Count < 9) return null;
+            var k9 = 2.0 / 10;
+            var signalEma = macdLine.Take(9).Average();
+            for (var i = 9; i < macdLine.Count; i++)
+                signalEma = macdLine[i] * k9 + signalEma * (1 - k9);
+            return (macdLine[^1], signalEma);
+        }
+
+        /// <summary>Stochastic %K (slow). OHLC newest-first. %K = (close - low14) / (high14 - low14) * 100, SMA3 smoothed for slow %K.</summary>
+        private static double? StochasticFromOhlc(IReadOnlyList<OhlcBar> bars, int period = 14)
+        {
+            if (bars.Count < period + 2) return null;
+            var rawK = new List<double>();
+            for (var i = 0; i <= bars.Count - period; i++)
+            {
+                var window = bars.Skip(i).Take(period).ToList();
+                var high14 = window.Max(b => b.High);
+                var low14 = window.Min(b => b.Low);
+                var close = bars[i].Close;
+                var range = high14 - low14;
+                rawK.Add(range == 0 ? 50 : (close - low14) / range * 100);
+            }
+            if (rawK.Count < 3) return null;
+            return rawK.Take(3).Average();
+        }
+
+        /// <summary>Fetches EOD and computes RSI, SMA, EMA, MACD, Stochastic. Returns same shape as Twelve Data for scoring.</summary>
         public async Task<Dictionary<string, double>> FetchTechnicalIndicatorsAsync(string instrumentName)
         {
             var results = new Dictionary<string, double>(StringComparer.OrdinalIgnoreCase)
@@ -166,20 +212,35 @@ namespace TradeHelper.Services
                 ["SMA14"] = 0,
                 ["SMA50"] = 0,
                 ["EMA50"] = 0,
-                ["EMA200"] = 0
+                ["EMA200"] = 0,
+                ["MACD"] = 0,
+                ["MACDSignal"] = 0,
+                ["StochasticK"] = 50
             };
 
             var symbol = ToMarketStackSymbol(instrumentName);
             if (symbol == null) return results;
 
-            var closes = await FetchEodClosesAsync(symbol);
-            if (closes == null || closes.Count < 14) return results;
+            var bars = await FetchEodOhlcAsync(symbol);
+            if (bars == null || bars.Count < 14) return results;
 
+            var closes = bars.Select(b => b.Close).ToList();
             results["RSI"] = RsiFromCloses(closes, 14);
             results["SMA14"] = Sma(closes, 14);
             if (closes.Count >= 50) results["SMA50"] = Sma(closes, 50);
             if (closes.Count >= 50) results["EMA50"] = Ema(closes, 50);
             if (closes.Count >= 200) results["EMA200"] = Ema(closes, 200);
+            if (closes.Count > 0) results["Close"] = closes[0];
+
+            var macd = MacdFromCloses(closes);
+            if (macd.HasValue)
+            {
+                results["MACD"] = macd.Value.macd;
+                results["MACDSignal"] = macd.Value.signal;
+            }
+
+            var stoch = StochasticFromOhlc(bars, 14);
+            if (stoch.HasValue) results["StochasticK"] = stoch.Value;
 
             return results;
         }

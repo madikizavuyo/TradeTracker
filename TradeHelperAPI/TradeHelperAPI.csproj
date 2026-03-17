@@ -2,6 +2,8 @@
 
   <PropertyGroup>
     <TargetFramework>net9.0</TargetFramework>
+    <!-- Exclude publish artifacts from being copied to output -->
+    <DefaultItemExcludes>$(DefaultItemExcludes);publish-out\**;publish-test\**</DefaultItemExcludes>
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
     <UserSecretsId>tradehelper-dev-secrets</UserSecretsId>
@@ -28,6 +30,17 @@
     <PackageReference Include="Newtonsoft.Json" Version="13.0.3" />
   </ItemGroup>
 
+  <!-- Copy web.config to publish output (SmarterASP requires it; SDK may omit in some publish paths) -->
+  <Target Name="CopyWebConfigToPublish" AfterTargets="Publish">
+    <Copy SourceFiles="$(ProjectDir)web.config" DestinationFolder="$(PublishDir)" SkipUnchangedFiles="true" Condition="Exists('$(ProjectDir)web.config')" />
+  </Target>
+  <!-- Remove folders and files not needed for production -->
+  <Target Name="CleanPublishOutput" AfterTargets="Publish">
+    <RemoveDir Directories="$(PublishDir)Source" Condition="Exists('$(PublishDir)Source')" />
+    <RemoveDir Directories="$(PublishDir)publish-out" Condition="Exists('$(PublishDir)publish-out')" />
+    <RemoveDir Directories="$(PublishDir)publish-test" Condition="Exists('$(PublishDir)publish-test')" />
+    <Delete Files="$(PublishDir).deploy-manifest.json" Condition="Exists('$(PublishDir).deploy-manifest.json')" />
+  </Target>
   <!-- Ensure logs folder exists in publish output for ASP.NET Core stdout logging -->
   <Target Name="IncludeLogsFolder" AfterTargets="ComputeFilesToPublish">
     <ItemGroup>

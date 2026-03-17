@@ -6,7 +6,8 @@ import { Button } from '@/components/ui/button';
 import { ScoreGauge } from '@/components/ScoreGauge';
 import { ScoreBar } from '@/components/ScoreBar';
 import { StatusDot } from '@/components/StatusDot';
-import { Filter, ChevronLeft, ChevronRight } from 'lucide-react';
+import { Filter, ChevronLeft, ChevronRight, Search } from 'lucide-react';
+import { Input } from '@/components/ui/input';
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from 'recharts';
 import { api } from '@/lib/api';
 import { useTrailBlazerRefresh } from '@/contexts/TrailBlazerRefreshContext';
@@ -22,6 +23,8 @@ export default function TrailBlazerScanner() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [assetFilter, setAssetFilter] = useState<AssetFilter>('All');
+  const [highConvictionOnly, setHighConvictionOnly] = useState(false);
+  const [searchQuery, setSearchQuery] = useState('');
   const [sortBy, setSortBy] = useState<'score' | 'name'>('score');
   const [scannerPage, setScannerPage] = useState(0);
   const [selectedInstrument, setSelectedInstrument] = useState<TrailBlazerScore | null>(null);
@@ -85,8 +88,14 @@ export default function TrailBlazerScanner() {
     }
   }, [selectedInstrument, loadHistory]);
 
+  const searchLower = searchQuery.trim().toLowerCase();
   const allFilteredScores = scores
-    .filter(s => assetFilter === 'All' || s.assetClass === assetFilter)
+    .filter(s => {
+      if (assetFilter !== 'All' && s.assetClass !== assetFilter) return false;
+      if (searchLower && !s.instrumentName.toLowerCase().includes(searchLower)) return false;
+      if (highConvictionOnly && s.overallScore >= 3.5 && s.overallScore <= 6.5) return false;
+      return true;
+    })
     .sort((a, b) => sortBy === 'score' ? b.overallScore - a.overallScore : a.instrumentName.localeCompare(b.instrumentName));
   const scannerTotalPages = Math.ceil(allFilteredScores.length / PAGE_SIZE);
   const filteredScores = allFilteredScores.slice(scannerPage * PAGE_SIZE, (scannerPage + 1) * PAGE_SIZE);
@@ -107,8 +116,8 @@ export default function TrailBlazerScanner() {
     }
   };
 
-  const formatScoreCell = (score: TrailBlazerScore, key: 'fundamental' | 'cot' | 'retail' | 'news' | 'technical') => {
-    const sourceMap = { fundamental: 'FRED', cot: 'CFTC', retail: 'myfxbook', news: 'Brave/Finnhub', technical: 'TwelveData' } as const;
+  const formatScoreCell = (score: TrailBlazerScore, key: 'fundamental' | 'cot' | 'retail' | 'news' | 'technical' | 'currency') => {
+    const sourceMap = { fundamental: 'FRED', cot: 'CFTC', retail: 'myfxbook', news: 'Brave/Finnhub', technical: 'TwelveData', currency: 'CurrencyStrength' } as const;
     const source = sourceMap[key];
     const hasData = key === 'retail'
       ? hasDataSource(score.dataSources, 'myfxbook') || hasDataSource(score.dataSources, 'load-myfxbook')
@@ -116,7 +125,8 @@ export default function TrailBlazerScanner() {
       ? hasDataSource(score.dataSources, 'TwelveData') || hasDataSource(score.dataSources, 'MarketStack') || hasDataSource(score.dataSources, 'iTick') || hasDataSource(score.dataSources, 'EODHD') || hasDataSource(score.dataSources, 'FMP') || hasDataSource(score.dataSources, 'NasdaqDataLink')
       : hasDataSource(score.dataSources, source);
     if (!hasData) return <span className="text-muted-foreground">N/A</span>;
-    const val = key === 'fundamental' ? score.fundamentalScore : key === 'cot' ? score.cotScore : key === 'retail' ? score.retailSentimentScore : key === 'news' ? (score.newsSentimentScore ?? 5) : score.technicalScore;
+    if (key === 'currency' && (score.currencyStrengthScore == null || score.currencyStrengthScore === undefined)) return <span className="text-muted-foreground">N/A</span>;
+    const val = key === 'fundamental' ? score.fundamentalScore : key === 'cot' ? score.cotScore : key === 'retail' ? score.retailSentimentScore : key === 'news' ? (score.newsSentimentScore ?? 5) : key === 'currency' ? score.currencyStrengthScore! : score.technicalScore;
     return val.toFixed(1);
   };
 
@@ -151,7 +161,25 @@ export default function TrailBlazerScanner() {
             <Filter className="h-5 w-5" />
             Asset Scanner
           </CardTitle>
-          <div className="flex gap-2">
+          <div className="flex flex-wrap items-center gap-2">
+            <div className="relative">
+              <Search className="absolute left-2 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
+              <Input
+                placeholder="Search instruments..."
+                value={searchQuery}
+                onChange={(e) => { setSearchQuery(e.target.value); setScannerPage(0); }}
+                className="pl-8 h-7 w-40 text-xs"
+              />
+            </div>
+            <Button
+              size="sm"
+              variant={highConvictionOnly ? 'default' : 'outline'}
+              onClick={() => { setHighConvictionOnly(!highConvictionOnly); setScannerPage(0); }}
+              className="text-xs h-7"
+              title="Hide Neutral (3.5–6.5)"
+            >
+              High Conviction
+            </Button>
             {(['All', 'ForexMajor', 'ForexMinor', 'Index', 'Metal', 'Commodity', 'Bond'] as AssetFilter[]).map(f => (
               <Button
                 key={f}
@@ -186,6 +214,7 @@ export default function TrailBlazerScanner() {
                   <th className="text-center p-2">COT</th>
                   <th className="text-center p-2">Retail</th>
                   <th className="text-center p-2">News</th>
+                  <th className="text-center p-2">Currency</th>
                   <th className="text-center p-2">Technical</th>
                 </tr>
               </thead>
@@ -201,7 +230,13 @@ export default function TrailBlazerScanner() {
                       <span className="text-xs text-muted-foreground">{s.assetClass}</span>
                     </td>
                     <td className="p-2 text-center">
-                      <span className={`font-bold ${s.overallScore >= 6.5 ? 'text-green-500' : s.overallScore <= 3.5 ? 'text-red-500' : 'text-yellow-500'}`}>
+                      <span className={`font-bold ${
+                        s.overallScore >= 7 ? 'text-green-700 dark:text-green-400' :
+                        s.overallScore >= 6.5 ? 'text-green-500' :
+                        s.overallScore <= 3 ? 'text-red-700 dark:text-red-400' :
+                        s.overallScore <= 3.5 ? 'text-red-500' :
+                        'text-yellow-500'
+                      }`}>
                         {s.overallScore.toFixed(1)}
                       </span>
                     </td>
@@ -212,6 +247,7 @@ export default function TrailBlazerScanner() {
                     <td className="p-2 text-center">{formatScoreCell(s, 'cot')}</td>
                     <td className="p-2 text-center">{formatScoreCell(s, 'retail')}</td>
                     <td className="p-2 text-center">{formatScoreCell(s, 'news')}</td>
+                    <td className="p-2 text-center">{formatScoreCell(s, 'currency')}</td>
                     <td className="p-2 text-center">{formatScoreCell(s, 'technical')}</td>
                   </tr>
                 ))}
@@ -302,6 +338,7 @@ export default function TrailBlazerScanner() {
                   <ScoreBar label="Institutional COT" value={hasDataSource(selectedInstrument.dataSources, 'CFTC') ? selectedInstrument.cotScore : undefined} />
                   <ScoreBar label="Retail Sentiment" value={(hasDataSource(selectedInstrument.dataSources, 'myfxbook') || hasDataSource(selectedInstrument.dataSources, 'load-myfxbook')) ? selectedInstrument.retailSentimentScore : undefined} />
                   <ScoreBar label="News Sentiment" value={hasDataSource(selectedInstrument.dataSources, 'Brave/Finnhub') ? (selectedInstrument.newsSentimentScore ?? 5) : undefined} />
+                  <ScoreBar label="Currency Strength" value={hasDataSource(selectedInstrument.dataSources, 'CurrencyStrength') && selectedInstrument.currencyStrengthScore != null ? selectedInstrument.currencyStrengthScore : undefined} />
                   <ScoreBar label="Technical" value={(hasDataSource(selectedInstrument.dataSources, 'TwelveData') || hasDataSource(selectedInstrument.dataSources, 'MarketStack') || hasDataSource(selectedInstrument.dataSources, 'iTick') || hasDataSource(selectedInstrument.dataSources, 'EODHD') || hasDataSource(selectedInstrument.dataSources, 'FMP') || hasDataSource(selectedInstrument.dataSources, 'NasdaqDataLink')) ? selectedInstrument.technicalScore : undefined} />
                 </div>
               </CardContent>

@@ -3,12 +3,14 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { api } from '@/lib/api';
 import { TrailBlazerBiasChange } from '@/lib/types';
-import { TrendingUp, TrendingDown, Minus } from 'lucide-react';
+import { TrendingUp, TrendingDown, Minus, Search } from 'lucide-react';
+import { Input } from '@/components/ui/input';
 
 export default function TrailBlazerBiasChanges() {
   const [changes, setChanges] = useState<TrailBlazerBiasChange[]>([]);
   const [loading, setLoading] = useState(true);
   const [lastHours, setLastHours] = useState(48);
+  const [searchQuery, setSearchQuery] = useState('');
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -61,6 +63,15 @@ export default function TrailBlazerBiasChanges() {
               <option value={168}>7 days</option>
             </select>
           </p>
+          <div className="relative mt-2 w-48">
+            <Search className="absolute left-2 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
+            <Input
+              placeholder="Search instruments..."
+              value={searchQuery}
+              onChange={(e) => setSearchQuery(e.target.value)}
+              className="pl-8 h-8 text-sm"
+            />
+          </div>
         </CardHeader>
         <CardContent>
           {loading ? (
@@ -69,7 +80,9 @@ export default function TrailBlazerBiasChanges() {
             <p className="text-muted-foreground">No bias changes in this period.</p>
           ) : (
             <div className="space-y-3">
-              {changes.map((c) => (
+              {changes
+                .filter(c => !searchQuery.trim() || c.instrumentName.toLowerCase().includes(searchQuery.trim().toLowerCase()))
+                .map((c) => (
                 <div
                   key={`${c.instrumentId}-${c.changedAt}`}
                   className="flex items-center justify-between rounded-lg border p-3"

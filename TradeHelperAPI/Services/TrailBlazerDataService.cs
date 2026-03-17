@@ -18,6 +18,14 @@ namespace TradeHelper.Services
         private const int BraveMinSecondsBetweenCalls = 1;
 
         private const string MyFxBookSessionKey = "MyFXBookSession";
+        private const string BraveLastCallKey = "BraveLastCallUtc";
+        private const int BraveCooldownHours = 24;
+
+        /// <summary>When true, Brave calls set a flag instead of recording immediately; block is recorded at end of refresh (after currency strength).</summary>
+        private static volatile bool _braveRefreshContext;
+        private static volatile bool _braveUsedThisRefresh;
+        /// <summary>When true (manual refresh with useBrave), try Brave for currency strength even when Finnhub has data. Ensures Brave runs on demand.</summary>
+        private static volatile bool _forceBraveForRefresh;
 
         private readonly HttpClient _client;
         private readonly IConfiguration _config;
@@ -39,6 +47,7 @@ namespace TradeHelper.Services
         private string FinnhubApiKey => _config["TrailBlazer:FinnhubApiKey"] ?? _config["FinnhubApiKey"] ?? "";
         private string MyFxBookEmail => _config["TrailBlazer:MyFXBookEmail"] ?? _config["MyFXBook:Email"] ?? "";
         private string MyFxBookPassword => _config["TrailBlazer:MyFXBookPassword"] ?? _config["MyFXBook:Password"] ?? "";
+        private string? MyFxBookSession => _config["TrailBlazer:MyFXBookSession"] ?? _config["MyFXBook:Session"];
 
         public TrailBlazerDataService(HttpClient client, IConfiguration config, ILogger<TrailBlazerDataService> logger, IServiceScopeFactory scopeFactory, ApiRateLimitService rateLimit, TwelveDataService? twelveDataService = null, MarketStackService? marketStackService = null, iTickService? iTickService = null, EodhdService? eodhdService = null, FmpService? fmpService = null, NasdaqDataLinkService? nasdaqDataLinkService = null, IMemoryCache? cache = null)
         {
@@ -148,6 +157,8 @@ namespace TradeHelper.Services
 
         // ────── COT Data (CFTC direct) ──────
         // Multiple sources: financial_lof (forex), CME (crypto), COMEX (metals), NYMEX (oil), etc.
+        // ZAR pairs: USDZAR = "SO AFRICAN RAND" or "SOUTH AFRICAN RAND - CHICAGO MERCANTILE EXCHANGE"
+        // Cross pairs: EURZAR, GBPZAR, AUDZAR, etc. = "EURO FX/SO AFRICAN RAND XRATE" etc.
 
         private static readonly string[] CftcCotUrls =
         {
@@ -177,6 +188,7 @@ namespace TradeHelper.Services
             " - NEW YORK MERCANTILE EXCHANGE",
             " - ICE FUTURES U.S.",
             " - ICE FUTURES EUROPE",
+            " - ICE FUTURES ENERGY DIV",
             " - CBOE FUTURES EXCHANGE",
             " - NEW YORK BOARD OF TRADE",
         };
@@ -193,6 +205,7 @@ namespace TradeHelper.Services
             ["MEXICAN PESO"] = "USDMXN",
             ["BRAZILIAN REAL"] = "USDBRL",
             ["SO AFRICAN RAND"] = "USDZAR",
+            ["SOUTH AFRICAN RAND"] = "USDZAR",
             ["EURO FX/BRITISH POUND XRATE"] = "EURGBP",
             ["EURO FX/JAPANESE YEN XRATE"] = "EURJPY",
             ["BITCOIN"] = "BTC",
@@ -218,16 +231,45 @@ namespace TradeHelper.Services
             ["CRUDE OIL, LIGHT SWEET"] = "USOIL",
             ["CRUDE OIL, LIGHT SWEET-WTI"] = "USOIL",
             ["LIGHT SWEET CRUDE OIL"] = "USOIL",
+            ["WTI-PHYSICAL"] = "USOIL",
+            ["WTI FINANCIAL CRUDE OIL"] = "USOIL",
+            ["WTI CRUDE OIL 1ST LINE"] = "USOIL",
             ["10-YEAR T-NOTES"] = "US10Y",
             ["5-YEAR T-NOTES"] = "US5Y",
             ["30-YEAR T-BONDS"] = "US30Y",
+            ["UST 10Y NOTE"] = "US10Y",
+            ["UST 5Y NOTE"] = "US5Y",
+            ["UST BOND"] = "US30Y",
+            ["ULTRA UST 10Y"] = "US10Y",
+            ["ULTRA UST BOND"] = "US30Y",
+            ["DJIA Consolidated"] = "US30",
+            ["DJIA x $5"] = "US30",
+            ["DJIA"] = "US30",
+            ["MICRO E-MINI DJIA (x$0.5)"] = "US30",
             ["EURO FX/SO AFRICAN RAND XRATE"] = "EURZAR",
+            ["EURO FX/SOUTH AFRICAN RAND XRATE"] = "EURZAR",
             ["BRITISH POUND/SO AFRICAN RAND XRATE"] = "GBPZAR",
+            ["BRITISH POUND/SOUTH AFRICAN RAND XRATE"] = "GBPZAR",
             ["AUSTRALIAN DOLLAR/SO AFRICAN RAND XRATE"] = "AUDZAR",
+            ["AUSTRALIAN DOLLAR/SOUTH AFRICAN RAND XRATE"] = "AUDZAR",
             ["NZ DOLLAR/SO AFRICAN RAND XRATE"] = "NZDZAR",
+            ["NZ DOLLAR/SOUTH AFRICAN RAND XRATE"] = "NZDZAR",
             ["CANADIAN DOLLAR/SO AFRICAN RAND XRATE"] = "CADZAR",
+            ["CANADIAN DOLLAR/SOUTH AFRICAN RAND XRATE"] = "CADZAR",
             ["SWISS FRANC/SO AFRICAN RAND XRATE"] = "CHFZAR",
+            ["SWISS FRANC/SOUTH AFRICAN RAND XRATE"] = "CHFZAR",
             ["JAPANESE YEN/SO AFRICAN RAND XRATE"] = "JPYZAR",
+            ["JAPANESE YEN/SOUTH AFRICAN RAND XRATE"] = "JPYZAR",
+            ["E-MINI S&P 500"] = "US500",
+            ["S&P 500 Consolidated"] = "US500",
+            ["MICRO E-MINI S&P 500 INDEX"] = "US500",
+            ["NASDAQ MINI"] = "US100",
+            ["NASDAQ-100 Consolidated"] = "US100",
+            ["MICRO E-MINI NASDAQ-100 INDEX"] = "US100",
+            ["NIKKEI STOCK AVERAGE YEN DENOM"] = "JP225",
+            ["E-MINI DAX"] = "DE40",
+            ["DAX"] = "DE40",
+            ["FTSE 100"] = "UK100",
         };
 
         /// <summary>Resolves CFTC contract name to symbol. Uses exact match first, then prefix/contains for metals and oil.</summary>
@@ -244,8 +286,42 @@ namespace TradeHelper.Services
                 { symbol = "XPTUSD"; return true; }
             if (upper.StartsWith("PALLADIUM"))
                 { symbol = "XPDUSD"; return true; }
-            if ((upper.Contains("CRUDE") && upper.Contains("OIL")) || upper.Contains("LIGHT SWEET") || (upper.Contains("WTI") && upper.Contains("OIL")))
+            if ((upper.Contains("CRUDE") && upper.Contains("OIL")) || upper.Contains("LIGHT SWEET") || (upper.Contains("WTI") && (upper.Contains("OIL") || upper.Contains("PHYSICAL") || upper.Contains("CRUDE"))))
                 { symbol = "USOIL"; return true; }
+            if ((upper.Contains("E-MINI") || upper.Contains("EMINI")) && upper.Contains("S&P") && (upper.Contains("500") || upper.Contains("SP")))
+                { symbol = "US500"; return true; }
+            if ((upper.Contains("NASDAQ") || upper.Contains("NAS")) && (upper.Contains("100") || upper.Contains("MINI")))
+                { symbol = "US100"; return true; }
+            if (upper.Contains("NIKKEI"))
+                { symbol = "JP225"; return true; }
+            if (upper.Contains("UST 10Y") || upper.Contains("ULTRA UST 10Y"))
+                { symbol = "US10Y"; return true; }
+            if (upper.Contains("UST 5Y"))
+                { symbol = "US5Y"; return true; }
+            if (upper.Contains("UST BOND") || upper.Contains("ULTRA UST BOND"))
+                { symbol = "US30Y"; return true; }
+            if (upper.Contains("DJIA"))
+                { symbol = "US30"; return true; }
+            if (upper.Contains("DAX"))
+                { symbol = "DE40"; return true; }
+            if (upper.Contains("FTSE") && upper.Contains("100"))
+                { symbol = "UK100"; return true; }
+            if ((upper.Contains("SO AFRICAN RAND") || upper.Contains("SOUTH AFRICAN RAND")) && !upper.Contains("/"))
+                { symbol = "USDZAR"; return true; }
+            if (upper.Contains("EURO FX") && (upper.Contains("SO AFRICAN RAND") || upper.Contains("SOUTH AFRICAN RAND")))
+                { symbol = "EURZAR"; return true; }
+            if (upper.Contains("BRITISH POUND") && (upper.Contains("SO AFRICAN RAND") || upper.Contains("SOUTH AFRICAN RAND")))
+                { symbol = "GBPZAR"; return true; }
+            if (upper.Contains("AUSTRALIAN DOLLAR") && (upper.Contains("SO AFRICAN RAND") || upper.Contains("SOUTH AFRICAN RAND")))
+                { symbol = "AUDZAR"; return true; }
+            if (upper.Contains("NZ DOLLAR") && (upper.Contains("SO AFRICAN RAND") || upper.Contains("SOUTH AFRICAN RAND")))
+                { symbol = "NZDZAR"; return true; }
+            if (upper.Contains("CANADIAN DOLLAR") && (upper.Contains("SO AFRICAN RAND") || upper.Contains("SOUTH AFRICAN RAND")))
+                { symbol = "CADZAR"; return true; }
+            if (upper.Contains("SWISS FRANC") && (upper.Contains("SO AFRICAN RAND") || upper.Contains("SOUTH AFRICAN RAND")))
+                { symbol = "CHFZAR"; return true; }
+            if (upper.Contains("JAPANESE YEN") && (upper.Contains("SO AFRICAN RAND") || upper.Contains("SOUTH AFRICAN RAND")))
+                { symbol = "JPYZAR"; return true; }
             symbol = null!;
             return false;
         }
@@ -267,6 +343,8 @@ namespace TradeHelper.Services
                     doc.LoadHtml(html);
                     var text = doc.DocumentNode.InnerText;
                     var reports = ParseCftcFinancialLof(text);
+                    if (reports.Count == 0)
+                        reports = ParseCftcLegacyOrDisaggregated(text);
                     foreach (var r in reports)
                         if (!result.ContainsKey(r.Symbol) || r.ReportDate > result[r.Symbol].ReportDate)
                             result[r.Symbol] = r;
@@ -346,6 +424,81 @@ namespace TradeHelper.Services
             return reports;
         }
 
+        /// <summary>Parses COMEX (Gold, Silver) legacy format and petroleum disaggregated format. Different layout than financial_lof.</summary>
+        private static List<COTReport> ParseCftcLegacyOrDisaggregated(string text)
+        {
+            var reports = new List<COTReport>();
+            var reportDateMatch = Regex.Match(text, @"(?:Futures Only|Commitments)[^.]*(\w+) (\d{1,2}), (\d{4})");
+            var reportDate = reportDateMatch.Success && DateTime.TryParse($"{reportDateMatch.Groups[1].Value} {reportDateMatch.Groups[2].Value}, {reportDateMatch.Groups[3].Value}", out var rd)
+                ? rd : DateTime.UtcNow;
+
+            var lines = text.Split(['\r', '\n'], StringSplitOptions.RemoveEmptyEntries);
+            for (var i = 0; i < lines.Length; i++)
+            {
+                var line = lines[i];
+                var exchangeIdx = -1;
+                foreach (var pattern in CftcExchangePatterns)
+                {
+                    var idx = line.IndexOf(pattern, StringComparison.Ordinal);
+                    if (idx >= 0) { exchangeIdx = idx; break; }
+                }
+                if (exchangeIdx < 0) continue;
+
+                var name = line[..exchangeIdx].Trim();
+                if (!TryResolveCftcSymbol(name, out var symbol)) continue;
+
+                // Find "All  :" line with numbers (legacy COMEX or disaggregated petroleum)
+                string? allLine = null;
+                for (var j = i + 1; j < Math.Min(i + 25, lines.Length); j++)
+                {
+                    if (lines[j].StartsWith("All  :", StringComparison.Ordinal) || lines[j].StartsWith("All :", StringComparison.Ordinal))
+                    {
+                        allLine = lines[j];
+                        break;
+                    }
+                }
+                if (string.IsNullOrWhiteSpace(allLine)) continue;
+
+                var nums = Regex.Matches(allLine, @"-?\d[\d,]*")
+                    .Select(x => long.TryParse(x.Value.Replace(",", ""), out var v) ? v : 0L)
+                    .ToList();
+                if (nums.Count < 6) continue;
+
+                long openInterest = nums[0];
+                if (openInterest == 0) continue;
+
+                long commercialLong, commercialShort, nonCommercialLong, nonCommercialShort;
+                // Legacy COMEX (Gold, Silver): OI | NC_L, NC_S, NC_Spread | Comm_L, Comm_S | Total_L, Total_S | Nonrep_L, Nonrep_S (10 nums)
+                if (nums.Count >= 10 && nums.Count <= 11)
+                {
+                    commercialLong = nums[4];
+                    commercialShort = nums[5];
+                    nonCommercialLong = nums[1];
+                    nonCommercialShort = nums[2];
+                }
+                else
+                {
+                    // Disaggregated (Petroleum, etc.): OI | Producer_L, Producer_S | Swap_L, Swap_S, Swap_Spread | MM_L, MM_S, MM_Spread | Other_L, Other_S, Other_Spread | Nonrep_L, Nonrep_S
+                    commercialLong = nums.Count > 2 ? nums[1] : 0;
+                    commercialShort = nums.Count > 2 ? nums[2] : 0;
+                    nonCommercialLong = nums.Count >= 12 ? nums[4] + nums[7] + nums[10] : 0;
+                    nonCommercialShort = nums.Count >= 12 ? nums[5] + nums[8] + nums[11] : 0;
+                }
+
+                reports.Add(new COTReport
+                {
+                    Symbol = symbol,
+                    CommercialLong = commercialLong,
+                    CommercialShort = commercialShort,
+                    NonCommercialLong = nonCommercialLong,
+                    NonCommercialShort = nonCommercialShort,
+                    OpenInterest = openInterest,
+                    ReportDate = reportDate
+                });
+            }
+            return reports;
+        }
+
         public async Task<COTReport?> FetchCOTDataAsync(string symbol)
         {
             var batch = await FetchCOTReportBatchAsync();
@@ -398,8 +551,8 @@ namespace TradeHelper.Services
                 }
             }
 
-            // Brave fallback (instrument-specific, paid) — only when Finnhub empty/fails
-            if (items.Count == 0 && !string.IsNullOrEmpty(BraveApiKey) && !await _rateLimit.IsBlockedAsync("Brave"))
+            // Brave fallback (instrument-specific, paid) — only when Finnhub empty/fails. 24h cooldown to reduce costs.
+            if (items.Count == 0 && !string.IsNullOrEmpty(BraveApiKey) && !await _rateLimit.IsBlockedAsync("Brave") && !await IsBraveCooldownActiveAsync())
             {
                 try
                 {
@@ -417,6 +570,7 @@ namespace TradeHelper.Services
                     }
                     else
                     {
+                        if (_braveRefreshContext) _braveUsedThisRefresh = true; else await RecordBraveCallAsync();
                         var doc = JsonDocument.Parse(json);
                         if (doc.RootElement.TryGetProperty("results", out var results) && results.ValueKind == JsonValueKind.Array)
                         {
@@ -459,6 +613,61 @@ namespace TradeHelper.Services
                 }
             }
             return items;
+        }
+
+        /// <summary>Call at start of full TrailBlazer refresh. Brave calls will defer 24h block until RecordBraveRefreshCompleteIfUsed.</summary>
+        public static void SetBraveRefreshContext(bool inRefresh)
+        {
+            _braveRefreshContext = inRefresh;
+            if (inRefresh) _braveUsedThisRefresh = false;
+        }
+
+        /// <summary>When true, manual refresh will try Brave for currency strength even when Finnhub has data. Ensures Brave runs on demand; block is set after refresh.</summary>
+        public static void SetForceBraveForRefresh(bool force) => _forceBraveForRefresh = force;
+
+        /// <summary>Call at end of refresh (after currency strength). Records 24h block if Brave was used during this refresh.</summary>
+        public async Task RecordBraveRefreshCompleteIfUsedAsync()
+        {
+            if (!_braveUsedThisRefresh) return;
+            await RecordBraveCallAsync();
+            _braveUsedThisRefresh = false;
+            _logger.LogInformation("Brave API: 24h cooldown set after refresh (news/currency strength completed)");
+        }
+
+        /// <summary>Returns true if Brave was called within the last 24h (cooldown active). Skips Brave to reduce API costs.</summary>
+        private async Task<bool> IsBraveCooldownActiveAsync()
+        {
+            using var scope = _scopeFactory.CreateScope();
+            var db = scope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
+            var setting = await db.SystemSettings.FirstOrDefaultAsync(s => s.Key == BraveLastCallKey);
+            if (setting == null || string.IsNullOrEmpty(setting.Value)) return false;
+            if (!DateTime.TryParse(setting.Value, null, System.Globalization.DateTimeStyles.RoundtripKind, out var lastCall))
+                return false;
+            var elapsed = (DateTime.UtcNow - lastCall).TotalHours;
+            if (elapsed < BraveCooldownHours)
+            {
+                _logger.LogDebug("Brave API: skipping (cooldown {Elapsed:F1}h / {Hours}h)", elapsed, BraveCooldownHours);
+                return true;
+            }
+            return false;
+        }
+
+        private async Task RecordBraveCallAsync()
+        {
+            using var scope = _scopeFactory.CreateScope();
+            var db = scope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
+            var now = DateTime.UtcNow.ToString("o");
+            var setting = await db.SystemSettings.FirstOrDefaultAsync(s => s.Key == BraveLastCallKey);
+            if (setting != null)
+            {
+                setting.Value = now;
+                setting.UpdatedAt = DateTime.UtcNow;
+            }
+            else
+            {
+                db.SystemSettings.Add(new SystemSetting { Key = BraveLastCallKey, Value = now, UpdatedAt = DateTime.UtcNow });
+            }
+            await db.SaveChangesAsync();
         }
 
         private static async Task BraveThrottleAsync()
@@ -553,6 +762,7 @@ namespace TradeHelper.Services
             var results = new List<WebSearchResult>();
             if (string.IsNullOrEmpty(BraveApiKey)) return results;
             if (await _rateLimit.IsBlockedAsync("Brave")) return results;
+            if (await IsBraveCooldownActiveAsync()) return results;
             try
             {
                 await BraveThrottleAsync();
@@ -567,6 +777,7 @@ namespace TradeHelper.Services
                         await _rateLimit.SetBlockedAsync("Brave");
                     return results;
                 }
+                if (_braveRefreshContext) _braveUsedThisRefresh = true; else await RecordBraveCallAsync();
                 var doc = JsonDocument.Parse(json);
                 if (doc.RootElement.TryGetProperty("web", out var web) && web.TryGetProperty("results", out var arr) && arr.ValueKind == JsonValueKind.Array)
                 {
@@ -660,7 +871,7 @@ namespace TradeHelper.Services
 
         // ────── Technical Indicators (Twelve Data only) ──────
 
-        /// <summary>Fetches technical indicators from Twelve Data only (RSI, EMA50, EMA200). MACD not used.</summary>
+        /// <summary>Fetches technical indicators. For indices uses MarketStack first (1 call); for forex/metals uses Twelve Data.</summary>
         public async Task<Dictionary<string, double>> FetchTechnicalIndicatorsAsync(string symbol)
         {
             var results = new Dictionary<string, double>(StringComparer.OrdinalIgnoreCase)
@@ -669,19 +880,35 @@ namespace TradeHelper.Services
                 ["MACD"] = 0,
                 ["MACDSignal"] = 0,
                 ["EMA50"] = 0,
-                ["EMA200"] = 0
+                ["EMA200"] = 0,
+                ["StochasticK"] = 50
             };
 
-            if (_twelveDataService == null) return results;
+            if (MarketStackService.ToMarketStackSymbol(symbol) != null && _marketStackService != null)
+            {
+                var ms = await _marketStackService.FetchTechnicalIndicatorsAsync(symbol);
+                if (ms.TryGetValue("RSI", out var rsi)) results["RSI"] = rsi;
+                if (ms.TryGetValue("EMA50", out var ema50) && ema50 != 0) results["EMA50"] = ema50;
+                if (ms.TryGetValue("EMA200", out var ema200) && ema200 != 0) results["EMA200"] = ema200;
+                if (ms.TryGetValue("MACD", out var macd) && macd != 0) results["MACD"] = macd;
+                if (ms.TryGetValue("MACDSignal", out var sig) && sig != 0) results["MACDSignal"] = sig;
+                if (ms.TryGetValue("StochasticK", out var stoch) && stoch != 50) results["StochasticK"] = stoch;
+                if (ms.TryGetValue("Close", out var close) && close > 0) results["Close"] = close;
+                return results;
+            }
 
+            if (_twelveDataService == null) return results;
             var td = await _twelveDataService.FetchTechnicalIndicatorsAsync(symbol);
-            if (td.TryGetValue("RSI", out var rsi)) results["RSI"] = rsi;
-            if (td.TryGetValue("EMA50", out var ema50) && ema50 != 0) results["EMA50"] = ema50;
-            if (td.TryGetValue("EMA200", out var ema200) && ema200 != 0) results["EMA200"] = ema200;
+            if (td.TryGetValue("RSI", out var r)) results["RSI"] = r;
+            if (td.TryGetValue("EMA50", out var e50) && e50 != 0) results["EMA50"] = e50;
+            if (td.TryGetValue("EMA200", out var e200) && e200 != 0) results["EMA200"] = e200;
+            if (td.TryGetValue("MACD", out var m) && m != 0) results["MACD"] = m;
+            if (td.TryGetValue("MACDSignal", out var s) && s != 0) results["MACDSignal"] = s;
+            if (td.TryGetValue("StochasticK", out var sk) && sk != 50) results["StochasticK"] = sk;
             return results;
         }
 
-        /// <summary>Fetches technical indicators (Twelve Data, then Market Stack fallback), stores in DB, returns dict and source name.</summary>
+        /// <summary>Fetches technical indicators. For indices tries MarketStack first (1 call); for forex/metals uses Twelve Data. Stores in DB.</summary>
         public async Task<(Dictionary<string, double> technicals, string? source)> FetchAndStoreTechnicalIndicatorsAsync(ApplicationDbContext db, int instrumentId, string symbol)
         {
             var results = new Dictionary<string, double>(StringComparer.OrdinalIgnoreCase)
@@ -690,45 +917,22 @@ namespace TradeHelper.Services
                 ["MACD"] = 0,
                 ["MACDSignal"] = 0,
                 ["EMA50"] = 0,
-                ["EMA200"] = 0
+                ["EMA200"] = 0,
+                ["StochasticK"] = 50
             };
             string? sourceUsed = null;
 
-            if (_twelveDataService == null)
-            {
-                _logger.LogWarning("Technicals: TwelveDataService not injected for {Symbol} — check DI registration", symbol);
-            }
-
-            if (_twelveDataService != null)
-            {
-                var td = await _twelveDataService.FetchTechnicalIndicatorsAsync(symbol);
-                if (td.TryGetValue("RSI", out var rsi)) results["RSI"] = rsi;
-                if (td.TryGetValue("EMA50", out var ema50) && ema50 != 0) results["EMA50"] = ema50;
-                if (td.TryGetValue("EMA200", out var ema200) && ema200 != 0) results["EMA200"] = ema200;
-
-                var rsiVal = td.TryGetValue("RSI", out var r) && r > 0 && r < 100 ? r : (double?)null;
-                var sma14 = td.TryGetValue("SMA14", out var s14) && s14 != 0 ? s14 : (double?)null;
-                var sma50 = td.TryGetValue("SMA50", out var s50) && s50 != 0 ? s50 : (double?)null;
-                var ema50Val = td.TryGetValue("EMA50", out var e50) && e50 != 0 ? e50 : (double?)null;
-                var ema200Val = td.TryGetValue("EMA200", out var e200) && e200 != 0 ? e200 : (double?)null;
-
-                if (rsiVal != null || sma14 != null || sma50 != null || ema50Val != null || ema200Val != null)
-                {
-                    sourceUsed = "TwelveData";
-                    await SaveTechnicalToDbAsync(db, instrumentId, symbol, rsiVal, sma14, sma50, ema50Val, ema200Val, "TwelveData");
-                }
-                else
-                    _logger.LogDebug("Technicals: TwelveData returned no usable data for {Symbol}, skipping DB write", symbol);
-            }
-
-            // Fallback: Market Stack (indices: US500, US30, US100, DE40, UK100, JP225)
-            if (sourceUsed == null && _marketStackService != null && results.Values.All(v => v == 0 || v == 50))
+            // Primary for indices: MarketStack (1 API call, computes MACD/Stochastic locally)
+            if (MarketStackService.ToMarketStackSymbol(symbol) != null && _marketStackService != null)
             {
                 var ms = await _marketStackService.FetchTechnicalIndicatorsAsync(symbol);
                 if (ms.TryGetValue("RSI", out var rsi) && rsi > 0 && rsi < 100) results["RSI"] = rsi;
                 if (ms.TryGetValue("EMA50", out var ema50) && ema50 != 0) results["EMA50"] = ema50;
                 if (ms.TryGetValue("EMA200", out var ema200) && ema200 != 0) results["EMA200"] = ema200;
-                if (ms.TryGetValue("SMA14", out var s14) && s14 != 0) { /* optional for scoring */ }
+                if (ms.TryGetValue("MACD", out var macd) && macd != 0) results["MACD"] = macd;
+                if (ms.TryGetValue("MACDSignal", out var sig) && sig != 0) results["MACDSignal"] = sig;
+                if (ms.TryGetValue("StochasticK", out var stoch) && stoch >= 0 && stoch <= 100) results["StochasticK"] = stoch;
+                if (ms.TryGetValue("Close", out var close) && close > 0) results["Close"] = close;
 
                 if (results.Values.Any(v => v != 0 && v != 50))
                 {
@@ -738,10 +942,50 @@ namespace TradeHelper.Services
                     var ema200Val = results.TryGetValue("EMA200", out var e200) && e200 != 0 ? e200 : (double?)null;
                     double? sma14 = ms.TryGetValue("SMA14", out var s) && s != 0 ? s : null;
                     double? sma50 = ms.TryGetValue("SMA50", out var s5) && s5 != 0 ? s5 : null;
-                    await SaveTechnicalToDbAsync(db, instrumentId, symbol, rsiVal, sma14, sma50, ema50Val, ema200Val, "MarketStack");
+                    double? closeVal = ms.TryGetValue("Close", out var cl) && cl > 0 ? cl : (double?)null;
+                    double? macdVal = ms.TryGetValue("MACD", out var m) && m != 0 ? m : null;
+                    double? macdSigVal = ms.TryGetValue("MACDSignal", out var sg) && sg != 0 ? sg : null;
+                    double? stochVal = ms.TryGetValue("StochasticK", out var sk) && sk >= 0 && sk <= 100 ? sk : null;
+                    await SaveTechnicalToDbAsync(db, instrumentId, symbol, rsiVal, sma14, sma50, ema50Val, ema200Val, closeVal, "MarketStack", macdVal, macdSigVal, stochVal);
                 }
                 else
-                    _logger.LogDebug("Technicals: MarketStack returned no usable data for {Symbol}, skipping DB write", symbol);
+                {
+                    if (MarketStackService.ToMarketStackSymbol(symbol) != null)
+                        _logger.LogInformation("Technicals: MarketStack failed for index {Symbol}, falling back to TwelveData", symbol);
+                    else
+                        _logger.LogDebug("Technicals: MarketStack returned no usable data for {Symbol}, skipping DB write", symbol);
+                }
+            }
+
+            // Fallback: Twelve Data (forex, metals, indices when MarketStack fails)
+            if (sourceUsed == null && _twelveDataService != null)
+            {
+                var td = await _twelveDataService.FetchTechnicalIndicatorsAsync(symbol);
+                if (td.TryGetValue("RSI", out var rsi)) results["RSI"] = rsi;
+                if (td.TryGetValue("EMA50", out var ema50) && ema50 != 0) results["EMA50"] = ema50;
+                if (td.TryGetValue("EMA200", out var ema200) && ema200 != 0) results["EMA200"] = ema200;
+                if (td.TryGetValue("MACD", out var macd) && macd != 0) results["MACD"] = macd;
+                if (td.TryGetValue("MACDSignal", out var sig) && sig != 0) results["MACDSignal"] = sig;
+                if (td.TryGetValue("StochasticK", out var stoch) && stoch >= 0 && stoch <= 100) results["StochasticK"] = stoch;
+
+                var rsiVal = td.TryGetValue("RSI", out var r) && r > 0 && r < 100 ? r : (double?)null;
+                var sma14 = td.TryGetValue("SMA14", out var s14) && s14 != 0 ? s14 : (double?)null;
+                var sma50 = td.TryGetValue("SMA50", out var s50) && s50 != 0 ? s50 : (double?)null;
+                var ema50Val = td.TryGetValue("EMA50", out var e50) && e50 != 0 ? e50 : (double?)null;
+                var ema200Val = td.TryGetValue("EMA200", out var e200) && e200 != 0 ? e200 : (double?)null;
+                double? macdVal = td.TryGetValue("MACD", out var m) && m != 0 ? m : null;
+                double? macdSigVal = td.TryGetValue("MACDSignal", out var sg) && sg != 0 ? sg : null;
+                double? stochVal = td.TryGetValue("StochasticK", out var sk) && sk >= 0 && sk <= 100 ? sk : null;
+
+                if (rsiVal != null || sma14 != null || sma50 != null || ema50Val != null || ema200Val != null)
+                {
+                    sourceUsed = "TwelveData";
+                    double? closeVal = td.TryGetValue("Close", out var c) && c > 0 ? c : (double?)null;
+                    if (!closeVal.HasValue && ema200Val.HasValue) { var q = await TryFetchCloseAsync(symbol); if (q > 0) closeVal = q; }
+                    await SaveTechnicalToDbAsync(db, instrumentId, symbol, rsiVal, sma14, sma50, ema50Val, ema200Val, closeVal, "TwelveData", macdVal, macdSigVal, stochVal);
+                }
+                else
+                    _logger.LogDebug("Technicals: TwelveData returned no usable data for {Symbol}, skipping DB write", symbol);
             }
 
             // Fallback: iTick (forex & metals: region=GB; kline → RSI/SMA/EMA)
@@ -761,7 +1005,9 @@ namespace TradeHelper.Services
                     var ema200Val = results.TryGetValue("EMA200", out var e200) && e200 != 0 ? e200 : (double?)null;
                     double? sma14 = it.TryGetValue("SMA14", out var s) && s != 0 ? s : null;
                     double? sma50 = it.TryGetValue("SMA50", out var s5) && s5 != 0 ? s5 : null;
-                    await SaveTechnicalToDbAsync(db, instrumentId, symbol, rsiVal, sma14, sma50, ema50Val, ema200Val, "iTick");
+                    double? closeVal = it.TryGetValue("Close", out var cl) && cl > 0 ? cl : (double?)null;
+                    if (!closeVal.HasValue && ema200Val.HasValue) { var q = await TryFetchCloseAsync(symbol); if (q > 0) closeVal = q; }
+                    await SaveTechnicalToDbAsync(db, instrumentId, symbol, rsiVal, sma14, sma50, ema50Val, ema200Val, closeVal, "iTick");
                 }
                 else
                     _logger.LogDebug("Technicals: iTick returned no usable data for {Symbol}, skipping DB write", symbol);
@@ -784,7 +1030,9 @@ namespace TradeHelper.Services
                     var ema200Val = results.TryGetValue("EMA200", out var e200) && e200 != 0 ? e200 : (double?)null;
                     double? sma14 = eod.TryGetValue("SMA14", out var s) && s != 0 ? s : null;
                     double? sma50 = eod.TryGetValue("SMA50", out var s5) && s5 != 0 ? s5 : null;
-                    await SaveTechnicalToDbAsync(db, instrumentId, symbol, rsiVal, sma14, sma50, ema50Val, ema200Val, "EODHD");
+                    double? closeVal = eod.TryGetValue("Close", out var cl) && cl > 0 ? cl : (double?)null;
+                    if (!closeVal.HasValue && ema200Val.HasValue) { var q = await TryFetchCloseAsync(symbol); if (q > 0) closeVal = q; }
+                    await SaveTechnicalToDbAsync(db, instrumentId, symbol, rsiVal, sma14, sma50, ema50Val, ema200Val, closeVal, "EODHD");
                 }
                 else
                     _logger.LogDebug("Technicals: EODHD returned no usable data for {Symbol}, skipping DB write", symbol);
@@ -798,6 +1046,7 @@ namespace TradeHelper.Services
                 if (fmp.TryGetValue("EMA50", out var ema50) && ema50 != 0) results["EMA50"] = ema50;
                 if (fmp.TryGetValue("EMA200", out var ema200) && ema200 != 0) results["EMA200"] = ema200;
                 if (fmp.TryGetValue("SMA14", out var s14) && s14 != 0) { /* optional */ }
+                if (fmp.TryGetValue("Close", out var close) && close > 0) results["Close"] = close;
 
                 if (results.Values.Any(v => v != 0 && v != 50))
                 {
@@ -807,7 +1056,8 @@ namespace TradeHelper.Services
                     var ema200Val = results.TryGetValue("EMA200", out var e200) && e200 != 0 ? e200 : (double?)null;
                     double? sma14 = fmp.TryGetValue("SMA14", out var s) && s != 0 ? s : null;
                     double? sma50 = fmp.TryGetValue("SMA50", out var s5) && s5 != 0 ? s5 : null;
-                    await SaveTechnicalToDbAsync(db, instrumentId, symbol, rsiVal, sma14, sma50, ema50Val, ema200Val, "FMP");
+                    double? closeVal = fmp.TryGetValue("Close", out var cl) && cl > 0 ? cl : (double?)null;
+                    await SaveTechnicalToDbAsync(db, instrumentId, symbol, rsiVal, sma14, sma50, ema50Val, ema200Val, closeVal, "FMP");
                 }
                 else
                     _logger.LogDebug("Technicals: FMP returned no usable data for {Symbol}, skipping DB write", symbol);
@@ -830,7 +1080,9 @@ namespace TradeHelper.Services
                     var ema200Val = results.TryGetValue("EMA200", out var e200) && e200 != 0 ? e200 : (double?)null;
                     double? sma14 = ndl.TryGetValue("SMA14", out var s) && s != 0 ? s : null;
                     double? sma50 = ndl.TryGetValue("SMA50", out var s5) && s5 != 0 ? s5 : null;
-                    await SaveTechnicalToDbAsync(db, instrumentId, symbol, rsiVal, sma14, sma50, ema50Val, ema200Val, "NasdaqDataLink");
+                    double? closeVal = ndl.TryGetValue("Close", out var cl) && cl > 0 ? cl : (double?)null;
+                    if (!closeVal.HasValue && ema200Val.HasValue) { var q = await TryFetchCloseAsync(symbol); if (q > 0) closeVal = q; }
+                    await SaveTechnicalToDbAsync(db, instrumentId, symbol, rsiVal, sma14, sma50, ema50Val, ema200Val, closeVal, "NasdaqDataLink");
                 }
                 else
                     _logger.LogDebug("Technicals: NasdaqDataLink returned no usable data for {Symbol}, skipping DB write", symbol);
@@ -861,16 +1113,18 @@ namespace TradeHelper.Services
             var dict = new Dictionary<string, double>(StringComparer.OrdinalIgnoreCase)
             {
                 ["RSI"] = latest.RSI.HasValue && latest.RSI > 0 && latest.RSI < 100 ? latest.RSI.Value : 50,
-                ["MACD"] = 0,
-                ["MACDSignal"] = 0,
+                ["MACD"] = latest.MACD ?? 0,
+                ["MACDSignal"] = latest.MACDSignal ?? 0,
                 ["EMA50"] = latest.EMA50 ?? 0,
-                ["EMA200"] = latest.EMA200 ?? 0
+                ["EMA200"] = latest.EMA200 ?? 0,
+                ["Close"] = latest.Close ?? 0,
+                ["StochasticK"] = latest.StochasticK ?? 50
             };
             return (dict, latest.Source, latest.DateCollected);
         }
 
         /// <summary>Saves technical indicators only when we have at least one value. When updating, only overwrites fields we received (non-null); preserves existing DB values for missing data.</summary>
-        private async Task SaveTechnicalToDbAsync(ApplicationDbContext db, int instrumentId, string symbol, double? rsiVal, double? sma14, double? sma50, double? ema50Val, double? ema200Val, string source)
+        private async Task SaveTechnicalToDbAsync(ApplicationDbContext db, int instrumentId, string symbol, double? rsiVal, double? sma14, double? sma50, double? ema50Val, double? ema200Val, double? closeVal, string source, double? macdVal = null, double? macdSignalVal = null, double? stochasticKVal = null)
         {
             if (!rsiVal.HasValue && !sma14.HasValue && !sma50.HasValue && !ema50Val.HasValue && !ema200Val.HasValue)
             {
@@ -887,6 +1141,10 @@ namespace TradeHelper.Services
                 if (sma50.HasValue) existing.SMA50 = sma50;
                 if (ema50Val.HasValue) existing.EMA50 = ema50Val;
                 if (ema200Val.HasValue) existing.EMA200 = ema200Val;
+                if (closeVal.HasValue && closeVal.Value > 0) existing.Close = closeVal;
+                if (macdVal.HasValue) existing.MACD = macdVal;
+                if (macdSignalVal.HasValue) existing.MACDSignal = macdSignalVal;
+                if (stochasticKVal.HasValue && stochasticKVal.Value >= 0 && stochasticKVal.Value <= 100) existing.StochasticK = stochasticKVal;
                 existing.DateCollected = now;
                 existing.Source = source;
             }
@@ -901,11 +1159,37 @@ namespace TradeHelper.Services
                     SMA50 = sma50,
                     EMA50 = ema50Val,
                     EMA200 = ema200Val,
+                    Close = closeVal.HasValue && closeVal.Value > 0 ? closeVal : null,
+                    MACD = macdVal,
+                    MACDSignal = macdSignalVal,
+                    StochasticK = stochasticKVal.HasValue && stochasticKVal.Value >= 0 && stochasticKVal.Value <= 100 ? stochasticKVal : null,
                     DateCollected = now,
                     Source = source
                 });
             }
-            _logger.LogInformation("Technicals: saved for {Symbol} from {Source} (RSI={HasRsi}, SMA14={HasSma14}, SMA50={HasSma50}, EMA50={HasEma50}, EMA200={HasEma200})", symbol, source, rsiVal.HasValue, sma14.HasValue, sma50.HasValue, ema50Val.HasValue, ema200Val.HasValue);
+            _logger.LogInformation("Technicals: saved for {Symbol} from {Source} (RSI={HasRsi}, MACD={HasMacd}, StochasticK={HasStoch})", symbol, source, rsiVal.HasValue, macdVal.HasValue, stochasticKVal.HasValue);
+        }
+
+        /// <summary>Tries to fetch latest close price for price vs EMA200 comparison. Forex uses FetchForexQuoteAsync; indices/commodities use EODHD or FMP.</summary>
+        private async Task<double> TryFetchCloseAsync(string symbol)
+        {
+            var norm = symbol.Replace("/", "").Replace("_", "").Replace(" ", "").ToUpperInvariant();
+            if (norm.Length >= 6 && norm.All(char.IsLetter))
+            {
+                var quote = await FetchForexQuoteAsync(norm);
+                if (quote > 0) return quote;
+            }
+            if (_eodhdService != null && EodhdService.ToEodhdSymbol(symbol) != null)
+            {
+                var q = await _eodhdService.FetchRealTimeQuoteAsync(symbol);
+                if (q > 0) return q;
+            }
+            if (_fmpService != null && FmpService.ToFmpSymbol(symbol) != null)
+            {
+                var q = await _fmpService.FetchQuoteAsync(symbol);
+                if (q > 0) return q;
+            }
+            return 0;
         }
 
         /// <summary>Loads technical data from Twelve Data only into TechnicalIndicators table.</summary>
@@ -913,6 +1197,106 @@ namespace TradeHelper.Services
         {
             if (_twelveDataService == null) return 0;
             return await _twelveDataService.LoadTechnicalDataToDatabaseAsync(db, limit);
+        }
+
+        private const string OilIndexCorrelationCacheKeyPrefix = "OilIndexCorrelation_";
+
+        /// <summary>Computes rolling correlation between USOIL and US500/US30. Returns correlation over 30 and 60 days. Uses FMP historical prices. Cached 1h.</summary>
+        public async Task<object> ComputeOilIndexCorrelationAsync(int window30 = 30, int window60 = 60)
+        {
+            if (_fmpService == null)
+                return new { usoilUs500_30d = (double?)null, usoilUs500_60d = (double?)null, usoilUs30_30d = (double?)null, usoilUs30_60d = (double?)null, message = "FMP not configured" };
+
+            var cacheKey = $"{OilIndexCorrelationCacheKeyPrefix}{window30}_{window60}";
+            if (_cache != null && _cache.TryGetValue(cacheKey, out object? cached))
+                return cached!;
+
+            var days = Math.Max(window30, window60) + 5;
+            var oil = await _fmpService.FetchHistoricalClosesAsync("USOIL", days);
+            var sp500 = await _fmpService.FetchHistoricalClosesAsync("US500", days);
+            var dji = await _fmpService.FetchHistoricalClosesAsync("US30", days);
+
+            static List<double> ToReturns(List<double> closes)
+            {
+                var ret = new List<double>();
+                for (var i = 0; i < closes.Count - 1; i++)
+                    ret.Add(closes[i] != 0 ? (closes[i] - closes[i + 1]) / closes[i + 1] : 0);
+                return ret;
+            }
+            static double? PearsonCorr(List<double> a, List<double> b, int n)
+            {
+                if (a.Count < n || b.Count < n) return null;
+                var sa = a.Take(n).ToList();
+                var sb = b.Take(n).ToList();
+                var meanA = sa.Average();
+                var meanB = sb.Average();
+                double sum = 0, sumA = 0, sumB = 0;
+                for (var i = 0; i < n; i++)
+                {
+                    var da = sa[i] - meanA;
+                    var db = sb[i] - meanB;
+                    sum += da * db;
+                    sumA += da * da;
+                    sumB += db * db;
+                }
+                var denom = Math.Sqrt(sumA * sumB);
+                return denom > 1e-10 ? sum / denom : (double?)null;
+            }
+
+            var retOil = ToReturns(oil);
+            var retSp500 = ToReturns(sp500);
+            var retDji = ToReturns(dji);
+
+            var n30 = Math.Min(window30, Math.Min(retOil.Count, Math.Min(retSp500.Count, retDji.Count)));
+            var n60 = Math.Min(window60, Math.Min(retOil.Count, Math.Min(retSp500.Count, retDji.Count)));
+
+            var result = new
+            {
+                usoilUs500_30d = n30 >= 10 ? PearsonCorr(retOil, retSp500, n30) : (double?)null,
+                usoilUs500_60d = n60 >= 20 ? PearsonCorr(retOil, retSp500, n60) : (double?)null,
+                usoilUs30_30d = n30 >= 10 ? PearsonCorr(retOil, retDji, n30) : (double?)null,
+                usoilUs30_60d = n60 >= 20 ? PearsonCorr(retOil, retDji, n60) : (double?)null,
+                dataPoints30 = n30,
+                dataPoints60 = n60
+            };
+            if (_cache != null)
+                _cache.Set(cacheKey, result, TimeSpan.FromHours(1));
+            return result;
+        }
+
+        private const string RelativeStrengthCacheKeyPrefix = "RelativeStrength_";
+
+        /// <summary>Ranks assets by % price change over N days. Uses FMP historical prices. Cached 1h to avoid 503 from host timeout.</summary>
+        public async Task<List<(string symbol, double pctChange5d, double pctChange20d)>> GetRelativeStrengthRankingAsync(int days5 = 5, int days20 = 20)
+        {
+            var cacheKey = $"{RelativeStrengthCacheKeyPrefix}{days5}_{days20}";
+            if (_cache != null && _cache.TryGetValue(cacheKey, out List<(string symbol, double pctChange5d, double pctChange20d)>? cached))
+                return cached ?? new List<(string, double, double)>();
+
+            var symbols = new[] { "US500", "US30", "US100", "USOIL", "XAUUSD", "XAGUSD" };
+            var results = new List<(string symbol, double pctChange5d, double pctChange20d)>();
+
+            if (_fmpService == null) return results;
+
+            foreach (var sym in symbols)
+            {
+                var closes = await _fmpService.FetchHistoricalClosesAsync(sym, Math.Max(days5, days20) + 5);
+                if (closes.Count < Math.Max(days5, days20) + 1) continue;
+
+                var pct5 = closes.Count > days5 && closes[days5] > 0
+                    ? (closes[0] - closes[days5]) / closes[days5] * 100
+                    : 0.0;
+                var pct20 = closes.Count > days20 && closes[days20] > 0
+                    ? (closes[0] - closes[days20]) / closes[days20] * 100
+                    : 0.0;
+
+                results.Add((sym, pct5, pct20));
+            }
+
+            var ordered = results.OrderByDescending(r => r.pctChange20d).ToList();
+            if (_cache != null && ordered.Count > 0)
+                _cache.Set(cacheKey, ordered, TimeSpan.FromHours(1));
+            return ordered;
         }
 
         // ────── Forex & Economic Calendar ──────
@@ -1060,6 +1444,76 @@ namespace TradeHelper.Services
                 _logger.LogWarning(ex, "ExchangeRate-API fetch failed for {Symbol}", symbol);
             }
             return 0;
+        }
+
+        /// <summary>Fetches global economic news headlines for currency strength analysis. Finnhub first, Brave fallback when empty. When ForceBraveForRefresh, tries Brave first so it runs on manual refresh.</summary>
+        public async Task<List<string>> FetchGlobalEconomicNewsAsync()
+        {
+            var headlines = new List<string>();
+            var tryBraveFirst = _forceBraveForRefresh && _braveRefreshContext && !string.IsNullOrEmpty(BraveApiKey) && !await _rateLimit.IsBlockedAsync("Brave") && !await IsBraveCooldownActiveAsync();
+            if (tryBraveFirst)
+            {
+                try
+                {
+                    var webResults = await BraveWebSearchAsync("global economic news forex GDP inflation Fed ECB", 15, "pd");
+                    foreach (var r in webResults)
+                    {
+                        if (!string.IsNullOrWhiteSpace(r.Title))
+                            headlines.Add(string.IsNullOrWhiteSpace(r.Description) ? r.Title : $"{r.Title} {r.Description}");
+                    }
+                    if (headlines.Count > 0)
+                    {
+                        _logger.LogInformation("FetchGlobalEconomicNewsAsync: Brave (forced for manual refresh) returned {Count} headlines for currency strength", headlines.Count);
+                        return headlines;
+                    }
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogDebug(ex, "FetchGlobalEconomicNewsAsync Brave (forced) failed, falling back to Finnhub");
+                }
+            }
+            if (!string.IsNullOrEmpty(FinnhubApiKey) && !await _rateLimit.IsBlockedAsync("Finnhub"))
+            {
+                try
+                {
+                    var url = $"https://finnhub.io/api/v1/news?category=general&token={FinnhubApiKey}";
+                    var json = await _client.GetStringAsync(url);
+                    var doc = JsonDocument.Parse(json);
+                    if (doc.RootElement.ValueKind == JsonValueKind.Array)
+                    {
+                        foreach (var el in doc.RootElement.EnumerateArray().Take(20))
+                        {
+                            var h = el.TryGetProperty("headline", out var hh) ? hh.GetString() ?? "" : "";
+                            var s = el.TryGetProperty("summary", out var ss) ? ss.GetString() ?? "" : "";
+                            if (!string.IsNullOrWhiteSpace(h))
+                                headlines.Add(string.IsNullOrWhiteSpace(s) ? h : $"{h} {s}");
+                        }
+                    }
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogDebug(ex, "FetchGlobalEconomicNewsAsync Finnhub failed");
+                }
+            }
+
+            if (headlines.Count == 0 && !string.IsNullOrEmpty(BraveApiKey) && !await _rateLimit.IsBlockedAsync("Brave") && !await IsBraveCooldownActiveAsync())
+            {
+                try
+                {
+                    var webResults = await BraveWebSearchAsync("global economic news forex GDP inflation Fed ECB", 15, "pd");
+                    foreach (var r in webResults)
+                    {
+                        if (!string.IsNullOrWhiteSpace(r.Title))
+                            headlines.Add(string.IsNullOrWhiteSpace(r.Description) ? r.Title : $"{r.Title} {r.Description}");
+                    }
+                    _logger.LogInformation("FetchGlobalEconomicNewsAsync: Brave fallback returned {Count} headlines for currency strength", headlines.Count);
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogDebug(ex, "FetchGlobalEconomicNewsAsync Brave fallback failed");
+                }
+            }
+            return headlines;
         }
 
         public async Task<List<Dictionary<string, object>>> FetchEconomicCalendarAsync()
@@ -1226,9 +1680,22 @@ namespace TradeHelper.Services
             return await FetchMyFxBookSentimentBatchAsync();
         }
 
-        /// <summary>Fetches retail sentiment. Uses stored DB session first; re-logs in only when session is invalid.</summary>
+        /// <summary>Fetches retail sentiment. Uses configured session, env, stored DB, or login.</summary>
         public async Task<Dictionary<string, (double longPct, double shortPct)>> FetchMyFxBookSentimentBatchAsync()
         {
+            var configSession = MyFxBookSession;
+            if (!string.IsNullOrEmpty(configSession))
+            {
+                var r = await FetchMyFxBookSentimentBatchWithSessionAsync(configSession);
+                if (r.Count > 0)
+                {
+                    _logger.LogInformation("MyFXBook: used TrailBlazer:MyFXBookSession — {Count} symbols", r.Count);
+                    await EnrichWithCryptoRetailFromBinanceAsync(r);
+                    await EnrichWithIndexRetailFromFinnhubAsync(r);
+                    return r;
+                }
+                _logger.LogWarning("MyFXBook: configured session returned 0 symbols (session may be invalid)");
+            }
             var envSession = Environment.GetEnvironmentVariable("MYFXBOOK_SESSION");
             if (!string.IsNullOrEmpty(envSession))
             {
@@ -1236,6 +1703,8 @@ namespace TradeHelper.Services
                 if (r.Count > 0)
                 {
                     _logger.LogInformation("MyFXBook: used MYFXBOOK_SESSION env — {Count} symbols", r.Count);
+                    await EnrichWithCryptoRetailFromBinanceAsync(r);
+                    await EnrichWithIndexRetailFromFinnhubAsync(r);
                     return r;
                 }
                 _logger.LogWarning("MyFXBook: MYFXBOOK_SESSION returned 0 symbols (session may be invalid)");
@@ -1245,7 +1714,84 @@ namespace TradeHelper.Services
                 _logger.LogWarning("MyFXBook: batch empty after login. Diagnostic: {Diagnostic}", System.Text.Json.JsonSerializer.Serialize(diag));
             else
                 _logger.LogInformation("MyFXBook: fetched {Count} symbols via login", result.Count);
+            await EnrichWithCryptoRetailFromBinanceAsync(result);
+            await EnrichWithIndexRetailFromFinnhubAsync(result);
             return result;
+        }
+
+        /// <summary>Enriches retail batch with US500, US100, US30 from Finnhub social sentiment (SPY, QQQ, DIA proxies). MyFXBook does not provide indices.</summary>
+        private async Task EnrichWithIndexRetailFromFinnhubAsync(Dictionary<string, (double longPct, double shortPct)> batch)
+        {
+            if (string.IsNullOrEmpty(FinnhubApiKey)) return;
+            var proxies = new[] { ("SPY", "US500"), ("QQQ", "US100"), ("DIA", "US30"), ("EWG", "DE40"), ("EWU", "UK100"), ("EWJ", "JP225") };
+            var to = DateTime.UtcNow;
+            var from = to.AddDays(-7);
+            foreach (var (finnhubSymbol, ourSymbol) in proxies)
+            {
+                if (batch.ContainsKey(ourSymbol)) continue;
+                try
+                {
+                    var url = $"https://finnhub.io/api/v1/stock/social-sentiment?symbol={Uri.EscapeDataString(finnhubSymbol)}&from={from:yyyy-MM-dd}&to={to:yyyy-MM-dd}&token={Uri.EscapeDataString(FinnhubApiKey)}";
+                    var json = await _client.GetStringAsync(url);
+                    using var doc = JsonDocument.Parse(json);
+                    if (!doc.RootElement.TryGetProperty("data", out var data) || data.ValueKind != JsonValueKind.Array || data.GetArrayLength() == 0)
+                        continue;
+                    double sumReddit = 0, sumTwitter = 0;
+                    int countReddit = 0, countTwitter = 0;
+                    foreach (var item in data.EnumerateArray())
+                    {
+                        if (item.TryGetProperty("redditScore", out var rs) && rs.TryGetDouble(out var rv) && rv >= 0 && rv <= 1)
+                        { sumReddit += rv; countReddit++; }
+                        if (item.TryGetProperty("twitterScore", out var ts) && ts.TryGetDouble(out var tv) && tv >= 0 && tv <= 1)
+                        { sumTwitter += tv; countTwitter++; }
+                    }
+                    var avg = (countReddit + countTwitter) > 0
+                        ? (sumReddit + sumTwitter) / (countReddit + countTwitter)
+                        : -1.0;
+                    if (avg >= 0 && avg <= 1)
+                    {
+                        var longPct = Math.Round(avg * 100, 1);
+                        var shortPct = Math.Round(100 - longPct, 1);
+                        batch[ourSymbol] = (longPct, shortPct);
+                        _logger.LogDebug("Finnhub: added {Symbol} retail (proxy {Proxy}) long={Long:F1}% short={Short:F1}%", ourSymbol, finnhubSymbol, longPct, shortPct);
+                    }
+                    await Task.Delay(300);
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogDebug(ex, "Finnhub sentiment fetch failed for {Symbol}", ourSymbol);
+                }
+            }
+        }
+
+        /// <summary>Enriches retail batch with BTC, ETH, SOL and XAUUSD, XAGUSD from Binance Futures global long/short ratio. MyFXBook does not provide crypto or metals.</summary>
+        private async Task EnrichWithCryptoRetailFromBinanceAsync(Dictionary<string, (double longPct, double shortPct)> batch)
+        {
+            var symbols = new[] { ("BTCUSDT", "BTC"), ("ETHUSDT", "ETH"), ("SOLUSDT", "SOL"), ("XAUUSDT", "XAUUSD"), ("XAGUSDT", "XAGUSD") };
+            foreach (var (binanceSymbol, ourSymbol) in symbols)
+            {
+                if (batch.ContainsKey(ourSymbol)) continue;
+                try
+                {
+                    var url = $"https://fapi.binance.com/futures/data/globalLongShortAccountRatio?symbol={binanceSymbol}&period=1d&limit=1";
+                    var json = await _client.GetStringAsync(url);
+                    using var doc = JsonDocument.Parse(json);
+                    if (doc.RootElement.ValueKind != JsonValueKind.Array || doc.RootElement.GetArrayLength() == 0) continue;
+                    var item = doc.RootElement[0];
+                    var longAccount = item.TryGetProperty("longAccount", out var la) && la.TryGetDouble(out var laVal) ? laVal * 100 : -1.0;
+                    var shortAccount = item.TryGetProperty("shortAccount", out var sa) && sa.TryGetDouble(out var saVal) ? saVal * 100 : -1.0;
+                    if (longAccount >= 0 && shortAccount >= 0 && Math.Abs(longAccount + shortAccount - 100) < 5)
+                    {
+                        batch[ourSymbol] = (longAccount, shortAccount);
+                        _logger.LogDebug("Binance: added {Symbol} retail long={Long:F1}% short={Short:F1}%", ourSymbol, longAccount, shortAccount);
+                    }
+                    await Task.Delay(200);
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogDebug(ex, "Binance retail fetch failed for {Symbol}", ourSymbol);
+                }
+            }
         }
 
         /// <summary>Same as FetchMyFxBookSentimentBatchAsync but returns diagnostic info for debugging.</summary>
@@ -1420,8 +1966,9 @@ namespace TradeHelper.Services
         {
             try
             {
-                // GET with URL-encoded params: ! -> %21, + -> %2B (critical - + as space breaks password)
-                var url = $"https://www.myfxbook.com/api/login.json?email={Uri.EscapeDataString(MyFxBookEmail)}&password={Uri.EscapeDataString(MyFxBookPassword)}";
+                // Config may store password URL-encoded (e.g. dCP7WkV%21T%2BcMd.2). Decode first to avoid double-encoding.
+                var rawPassword = Uri.UnescapeDataString(MyFxBookPassword);
+                var url = $"https://www.myfxbook.com/api/login.json?email={Uri.EscapeDataString(MyFxBookEmail)}&password={Uri.EscapeDataString(rawPassword)}";
                 var json = await _client.GetStringAsync(url);
                 using var doc = JsonDocument.Parse(json);
                 var session = doc.RootElement.TryGetProperty("session", out var s) ? s.GetString() : null;
@@ -1449,14 +1996,14 @@ namespace TradeHelper.Services
             // FRED series IDs. PMI uses OECD Business Confidence (100=neutral, not 50). See docs/FUNDAMENTAL_DATA_ANALYSIS.md
             var currencyIndicators = new Dictionary<string, Dictionary<string, string>>
             {
-                ["USD"] = new() { ["GDP"] = "GDPC1", ["CPI"] = "CPIAUCSL", ["Unemployment"] = "UNRATE", ["InterestRate"] = "FEDFUNDS", ["PMI"] = "BSCICP03USM665S" },
+                ["USD"] = new() { ["GDP"] = "GDPC1", ["CPI"] = "CPIAUCSL", ["Unemployment"] = "UNRATE", ["InterestRate"] = "FEDFUNDS", ["PMI"] = "BSCICP03USM665S", ["Treasury10Y"] = "DGS10", ["DollarIndex"] = "DTWEXBGS", ["PCE"] = "PCEPI", ["JOLTs"] = "JTSJOL", ["JoblessClaims"] = "ICSA" },
                 ["EUR"] = new() { ["GDP"] = "EUNNGDP", ["CPI"] = "CP0000EZ19M086NEST", ["Unemployment"] = "LRHUTTTTEZM156S", ["InterestRate"] = "ECBDFR", ["PMI"] = "BSCICP03EZM665S" },
-                ["GBP"] = new() { ["GDP"] = "NAEXKP01GBQ189S", ["CPI"] = "GBRCPIALLMINMEI", ["Unemployment"] = "LRHUTTTTGBM156S", ["InterestRate"] = "BOERUKM", ["PMI"] = "BSCICP03GBM665S" },
+                ["GBP"] = new() { ["GDP"] = "NAEXKP01GBA657S", ["CPI"] = "GBRCPIALLMINMEI", ["Unemployment"] = "LRHUTTTTGBM156S", ["InterestRate"] = "BOERUKM", ["PMI"] = "BSCICP03GBM665S" },
                 ["JPY"] = new() { ["GDP"] = "JPNRGDPEXP", ["CPI"] = "JPNCPIALLMINMEI", ["Unemployment"] = "LRHUTTTTJPM156S", ["InterestRate"] = "IRSTCB01JPM156N", ["PMI"] = "BSCICP03JPM665S" },
                 ["AUD"] = new() { ["GDP"] = "AUSGDPNQDSMEI", ["CPI"] = "AUSCPIALLQINMEI", ["Unemployment"] = "LRHUTTTTAUM156S", ["InterestRate"] = "IRSTCI01AUM156N", ["PMI"] = "BSCICP03AUM665S" },
-                ["NZD"] = new() { ["GDP"] = "NZLGDPNQDSMEI", ["CPI"] = "NZLCPIALLQINMEI", ["Unemployment"] = "LRHUTTTTNZM156S", ["InterestRate"] = "IRSTCI01NZM156N" },
-                ["CAD"] = new() { ["GDP"] = "NAEXKP01CAQ189S", ["CPI"] = "CANCPIALLMINMEI", ["Unemployment"] = "LRHUTTTTCAM156S", ["InterestRate"] = "IRSTCB01CAM156N", ["PMI"] = "BSCICP03CAM665S" },
-                ["CHF"] = new() { ["GDP"] = "NAEXKP01CHQ189S", ["CPI"] = "CHECPIALLMINMEI", ["Unemployment"] = "LRHUTTTTCHM156S", ["InterestRate"] = "IRSTCI01CHM156N", ["PMI"] = "BSCICP03CHM665S" },
+                ["NZD"] = new() { ["GDP"] = "NZLGDPNQDSMEI", ["CPI"] = "NZLCPIALLQINMEI", ["Unemployment"] = "LRHUTTTTNZA156N", ["InterestRate"] = "IRSTCI01NZM156N" },
+                ["CAD"] = new() { ["GDP"] = "NAEXKP01CAQ189S", ["CPI"] = "CANCPIALLMINMEI", ["Unemployment"] = "LRHUTTTTCAM156S", ["InterestRate"] = "IRSTCB01CAM156N" },
+                ["CHF"] = new() { ["GDP"] = "NAEXKP01CHA657S", ["CPI"] = "CHECPIALLMINMEI", ["Unemployment"] = "LRHUTTTTCHQ156S", ["InterestRate"] = "IRSTCI01CHM156N" },
                 ["SEK"] = new() { ["GDP"] = "CLVMNACSCAB1GQSE", ["CPI"] = "CP0000SEM086NEST", ["Unemployment"] = "LRHUTTTTSEM156S" },
                 ["ZAR"] = new() { ["GDP"] = "ZAFGDPRQPSMEI", ["CPI"] = "ZAFCPIALLMINMEI", ["Unemployment"] = "LRUN64TTZAQ156S", ["InterestRate"] = "IRSTCB01ZAM156N", ["PMI"] = "BSCICP03ZAM665S" },
                 ["CNY"] = new() { ["GDP"] = "CHNGDPRAPSMEI", ["CPI"] = "CHNCPIALLMINMEI", ["InterestRate"] = "IRSTCB01CNM156N", ["PMI"] = "BSCICP03CNM665S" }
@@ -1486,13 +2033,13 @@ namespace TradeHelper.Services
                             value = yoy ?? 0;
                         }
                     }
-                    else if (indicator == "CPI")
+                    else if (indicator == "CPI" || indicator == "PCE")
                     {
                         if (cpiIsGrowthRate.Contains(seriesId))
                             value = await FetchFredDataAsync(seriesId);
                         else
                         {
-                            var obsCount = cpiQuarterlySeries.Contains(seriesId) ? 5 : 13;
+                            var obsCount = (indicator == "PCE" || cpiQuarterlySeries.Contains(seriesId)) ? 5 : 13;
                             var yoy = await FetchFredYoYPercentAsync(seriesId, obsCount);
                             value = yoy ?? 0;
                         }
@@ -1510,6 +2057,11 @@ namespace TradeHelper.Services
                         "Unemployment" => value < 5 ? "Positive" : "Negative",
                         "InterestRate" => value > 2 ? "Positive" : "Neutral",
                         "PMI" => value > PmiNeutral ? "Positive" : value < PmiNeutral ? "Negative" : "Neutral",
+                        "Treasury10Y" => value > 4.5 ? "Negative" : value < 3 ? "Positive" : "Neutral", // High yield = bearish for stocks
+                        "DollarIndex" => value > 125 ? "Negative" : value < 118 ? "Positive" : "Neutral", // High DXY proxy = Risk-Off (bearish risk assets)
+                        "PCE" => value >= FedInflationTarget - CpiTargetBand && value <= FedInflationTarget + CpiTargetBand ? "Neutral" : value > FedInflationTarget + CpiTargetBand ? "Negative" : "Positive",
+                        "JOLTs" => value > 9 ? "Positive" : value < 7 ? "Negative" : "Neutral", // Job openings (millions)
+                        "JoblessClaims" => value < 250 ? "Positive" : value > 350 ? "Negative" : "Neutral", // Initial claims (thousands)
                         _ => "Neutral"
                     };
 

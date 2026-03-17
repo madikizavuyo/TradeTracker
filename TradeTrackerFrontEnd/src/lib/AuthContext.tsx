@@ -16,6 +16,7 @@ interface AuthContextType {
   register: (email: string, password: string, confirmPassword: string, firstName: string, lastName: string) => Promise<void>;
   logout: () => Promise<void>;
   isAuthenticated: boolean;
+  isAdmin: boolean;
 }
 
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
@@ -57,6 +58,7 @@ function isTokenExpiringSoon(token: string, minutesBeforeExpiry: number = 30): b
 
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [user, setUser] = useState<User | null>(null);
+  const [roles, setRoles] = useState<string[]>([]);
   const [loading, setLoading] = useState(true);
 
   // Check authentication using the new checkAuth endpoint
@@ -69,7 +71,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         // Verify token is still valid using checkAuth endpoint
         try {
           const authCheck = await api.checkAuth();
-          if (authCheck.authenticated) {
+            if (authCheck.authenticated) {
+            setRoles(authCheck.roles ?? []);
             const userData = {
               id: authCheck.email,
               email: authCheck.email,
@@ -83,23 +86,28 @@ export function AuthProvider({ children }: { children: ReactNode }) {
             localStorage.removeItem('token');
             localStorage.removeItem('user');
             setUser(null);
+            setRoles([]);
           }
         } catch (error) {
           // Token invalid or expired - try to use stored user if token is not expired
           const decoded = decodeJWT(token);
-          if (decoded && decoded.exp && decoded.exp * 1000 > Date.now()) {
-            // Token is valid but checkAuth failed, use stored user
+            if (decoded && decoded.exp && decoded.exp * 1000 > Date.now()) {
+            // Token is valid but checkAuth failed, use stored user and decode roles from JWT
             setUser(JSON.parse(storedUser));
+            const roleClaims = decoded['http://schemas.microsoft.com/ws/2008/06/identity/claims/role'] ?? decoded.role;
+            setRoles(Array.isArray(roleClaims) ? roleClaims : roleClaims ? [roleClaims] : []);
           } else {
             // Token expired, clear storage
             localStorage.removeItem('token');
             localStorage.removeItem('user');
             setUser(null);
+            setRoles([]);
           }
         }
       } else {
         // No token or user stored
         setUser(null);
+        setRoles([]);
       }
     } catch (error) {
       console.error('Auth check failed:', error);
@@ -131,8 +139,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
           }
         } catch (error) {
           console.error('Proactive token refresh failed:', error);
-          // If refresh fails, logout user
-          await logout();
+          // Session expired - clear local state without calling logout API (it would also return 401)
+          setUser(null);
+          localStorage.removeItem('token');
+          localStorage.removeItem('user');
         }
       }
     };
@@ -159,6 +169,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       // Try to get user details from checkAuth endpoint
       try {
         const authCheck = await api.checkAuth();
+        setRoles(authCheck.roles ?? []);
         const userData = {
           id: authCheck.email, // Use email as ID if no userId available
           email: authCheck.email,
@@ -221,6 +232,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       console.error('Logout failed:', error);
     } finally {
       setUser(null);
+      setRoles([]);
       localStorage.removeItem('token');
       localStorage.removeItem('user');
     }
@@ -235,6 +247,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         register,
         logout,
         isAuthenticated: !!user,
+        isAdmin: roles.includes('Admin'),
       }}
     >
       {children}

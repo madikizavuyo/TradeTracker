@@ -40,6 +40,8 @@ export default function TrailBlazer() {
   const [aiAnalysis, setAiAnalysis] = useState<string | null>(null);
   const [aiAnalysisLoading, setAiAnalysisLoading] = useState(false);
   const [aiAnalysisError, setAiAnalysisError] = useState<string | null>(null);
+  const [oilCorrelation, setOilCorrelation] = useState<{ usoilUs500_30d: number | null; usoilUs500_60d: number | null; usoilUs30_30d: number | null; usoilUs30_60d: number | null } | null>(null);
+  const [oilCorrelationLoading, setOilCorrelationLoading] = useState(false);
   const PAGE_SIZE = 10;
 
   const loadData = useCallback(async (backgroundRefresh = false) => {
@@ -64,6 +66,18 @@ export default function TrailBlazer() {
     }
   }, []);
 
+  const loadOilCorrelation = useCallback(async () => {
+    setOilCorrelationLoading(true);
+    try {
+      const res = await api.getTrailBlazerOilIndexCorrelation();
+      setOilCorrelation(res);
+    } catch {
+      setOilCorrelation(null);
+    } finally {
+      setOilCorrelationLoading(false);
+    }
+  }, []);
+
   const loadAiAnalysis = useCallback(async (instrumentId: number) => {
     setAiAnalysisLoading(true);
     setAiAnalysisError(null);
@@ -85,6 +99,10 @@ export default function TrailBlazer() {
   useEffect(() => {
     loadData();
   }, []);
+
+  useEffect(() => {
+    if (!loading && !error) loadOilCorrelation();
+  }, [loading, error, loadOilCorrelation]);
 
   useEffect(() => {
     setTabStatus('overview', loading ? 'loading' : error ? 'error' : 'idle');
@@ -154,6 +172,12 @@ export default function TrailBlazer() {
   const sentimentTotalPages = Math.ceil(sentiment.length / PAGE_SIZE);
   const paginatedSentiment = sentiment.slice(sentimentPage * PAGE_SIZE, (sentimentPage + 1) * PAGE_SIZE);
 
+  const usdGdp = heatmap.find(h => h.currency === 'USD' && h.indicator === 'GDP');
+  const usdCpi = heatmap.find(h => h.currency === 'USD' && h.indicator === 'CPI');
+  const usdDollarIndex = heatmap.find(h => h.currency === 'USD' && h.indicator === 'DollarIndex');
+  const stagflationWarning = usdGdp != null && usdCpi != null && usdGdp.value < 0 && usdCpi.value > 2.5;
+  const riskOffWarning = usdDollarIndex != null && usdDollarIndex.value > 125;
+
   if (loading) {
     return (
       <div className="flex flex-col items-center justify-center h-96 gap-4">
@@ -170,6 +194,12 @@ export default function TrailBlazer() {
         <div className="flex items-center gap-2 text-sm text-muted-foreground">
           <StatusDot status={error ? 'error' : 'idle'} title={error ?? 'Data loaded'} />
           <span>{error ? 'Load failed' : 'Overview'}</span>
+          {stagflationWarning && (
+            <Badge variant="destructive" className="ml-2">Stagflation Warning</Badge>
+          )}
+          {riskOffWarning && !stagflationWarning && (
+            <Badge variant="outline" className="ml-2 border-amber-500 text-amber-600 dark:text-amber-400">Risk-Off</Badge>
+          )}
         </div>
         {error && (
           <Card>
@@ -381,6 +411,47 @@ export default function TrailBlazer() {
             </div>
           </div>
         )}
+
+        {/* Oil–Index Correlation */}
+        <Card>
+          <CardHeader>
+            <CardTitle className="flex items-center gap-2 text-base">
+              <StatusDot status={oilCorrelationLoading ? 'loading' : 'idle'} />
+              Oil–Index Correlation
+            </CardTitle>
+            <p className="text-sm text-muted-foreground">
+              Rolling correlation of daily returns: USOIL vs US500 (S&P 500) and US30 (Dow). Positive = move together.
+            </p>
+          </CardHeader>
+          <CardContent>
+            {oilCorrelationLoading ? (
+              <p className="text-sm text-muted-foreground">Loading...</p>
+            ) : oilCorrelation ? (
+              <div className="grid gap-4 sm:grid-cols-2">
+                <div className="rounded-lg border border-border p-4">
+                  <p className="text-sm font-medium text-muted-foreground">USOIL vs US500</p>
+                  <p className="text-2xl font-bold mt-1">
+                    {oilCorrelation.usoilUs500_30d != null ? `${(oilCorrelation.usoilUs500_30d * 100).toFixed(1)}%` : '—'} <span className="text-sm font-normal text-muted-foreground">(30d)</span>
+                  </p>
+                  <p className="text-lg text-muted-foreground">
+                    {oilCorrelation.usoilUs500_60d != null ? `${(oilCorrelation.usoilUs500_60d * 100).toFixed(1)}%` : '—'} <span className="text-xs">(60d)</span>
+                  </p>
+                </div>
+                <div className="rounded-lg border border-border p-4">
+                  <p className="text-sm font-medium text-muted-foreground">USOIL vs US30</p>
+                  <p className="text-2xl font-bold mt-1">
+                    {oilCorrelation.usoilUs30_30d != null ? `${(oilCorrelation.usoilUs30_30d * 100).toFixed(1)}%` : '—'} <span className="text-sm font-normal text-muted-foreground">(30d)</span>
+                  </p>
+                  <p className="text-lg text-muted-foreground">
+                    {oilCorrelation.usoilUs30_60d != null ? `${(oilCorrelation.usoilUs30_60d * 100).toFixed(1)}%` : '—'} <span className="text-xs">(60d)</span>
+                  </p>
+                </div>
+              </div>
+            ) : (
+              <p className="text-sm text-muted-foreground">Correlation data unavailable. Ensure FMP API key is configured.</p>
+            )}
+          </CardContent>
+        </Card>
 
         {/* Economic Heatmap */}
         <Card>

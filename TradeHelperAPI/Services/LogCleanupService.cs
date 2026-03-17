@@ -49,7 +49,7 @@ namespace TradeHelper.Services
             using var scope = _provider.CreateScope();
             var db = scope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
 
-            var retentionDays = _config.GetValue("LogCleanup:RetentionDays", 3);
+            var retentionDays = _config.GetValue("LogCleanup:RetentionDays", 5);
             var cutoff = DateTime.UtcNow.AddDays(-retentionDays);
 
             var userLogsToDelete = await db.UserLogs.Where(l => l.Timestamp < cutoff).CountAsync();

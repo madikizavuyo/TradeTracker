@@ -5,7 +5,7 @@ interface EconomicHeatmapProps {
 }
 
 const CURRENCIES = ['USD', 'EUR', 'GBP', 'JPY', 'AUD', 'NZD', 'CAD', 'CHF', 'SEK', 'ZAR', 'CNY'];
-const INDICATORS = ['GDP', 'CPI', 'Unemployment', 'InterestRate', 'PMI'];
+const INDICATORS = ['GDP', 'CPI', 'Unemployment', 'InterestRate', 'PMI', 'Treasury10Y', 'DollarIndex', 'PCE', 'JOLTs', 'JoblessClaims'];
 
 function getCellColor(impact: string) {
   switch (impact) {
@@ -47,8 +47,16 @@ export function EconomicHeatmap({ data }: EconomicHeatmapProps) {
                 const entry = getValue(currency, indicator);
                 const cellClass = entry ? getCellColor(entry.impact) : 'bg-muted/20 text-muted-foreground';
                 const displayValue = entry
-                  ? (indicator === 'GDP' || indicator === 'CPI')
+                  ? (indicator === 'GDP' || indicator === 'CPI' || indicator === 'PCE')
                     ? `${entry.value.toFixed(1)}%`
+                    : indicator === 'Treasury10Y'
+                    ? `${entry.value.toFixed(2)}%`
+                    : indicator === 'JOLTs'
+                    ? `${(entry.value / 1000).toFixed(1)}M`
+                    : indicator === 'JoblessClaims'
+                    ? `${Math.round(entry.value)}K`
+                    : indicator === 'DollarIndex'
+                    ? entry.value.toFixed(1)
                     : entry.value.toFixed(1)
                   : '—';
                 return (
