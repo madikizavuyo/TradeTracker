@@ -1,4 +1,5 @@
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Configuration;
 using TradeHelper.Data;
 using TradeHelper.Models;
 
@@ -9,18 +10,21 @@ namespace TradeHelper.Services
         private readonly IServiceProvider _provider;
         private readonly IConfiguration _config;
         private readonly TrailBlazerRefreshProgressService _progress;
+        private readonly IBreakoutSignalNotifier? _breakoutNotifier;
         private readonly ILogger<TrailBlazerBackgroundService> _logger;
 
         public TrailBlazerBackgroundService(
             IServiceProvider provider,
             IConfiguration config,
             TrailBlazerRefreshProgressService progress,
-            ILogger<TrailBlazerBackgroundService> logger)
+            ILogger<TrailBlazerBackgroundService> logger,
+            IBreakoutSignalNotifier? breakoutNotifier = null)
         {
             _provider = provider;
             _config = config;
             _progress = progress;
             _logger = logger;
+            _breakoutNotifier = breakoutNotifier;
         }
 
         protected override async Task ExecuteAsync(CancellationToken stoppingToken)
@@ -107,7 +111,8 @@ namespace TradeHelper.Services
                 }
 
                 _progress.SetRunning("currency-strength", "Building currency strength (news + fundamentals)...");
-                await BuildAndStoreCurrencyStrengthAsync(db, dataService, scope.ServiceProvider);
+                var newsCacheHours = _config.GetValue("TrailBlazer:CurrencyStrengthNewsCacheHours", 48);
+                await BuildAndStoreCurrencyStrengthAsync(db, dataService, scope.ServiceProvider, newsCacheHours);
 
                 _progress.SetRunning("cot", "Fetching COT reports from CFTC...");
                 var cotBatch = await dataService.FetchCOTReportBatchAsync();
@@ -126,7 +131,7 @@ namespace TradeHelper.Services
                 await SaveChangesWithFullErrorLoggingAsync(db, "heatmap/COT");
 
                 var currencyOverrides = await LoadCurrencyOverridesAsync(db);
-                var currencyStrength = await LoadCombinedCurrencyStrengthAsync(db, heatmapEntries);
+                var currencyStrength = await LoadCombinedCurrencyStrengthAsync(db, heatmapEntries, newsCacheHours);
 
                 _progress.SetRunning("instruments", "Processing instruments...", 0, instruments.Count);
                 var idx = 0;
@@ -139,7 +144,7 @@ namespace TradeHelper.Services
                 {
                     try
                     {
-                        var (hasRetail, hasCOT, hasTech, hasNews) = await ProcessInstrumentAsync(db, dataService, scoringEngine, instrument, heatmapEntries, cotBatch, myFxBookSentiment, currencyOverrides, currencyStrength, _logger);
+                        var (hasRetail, hasCOT, hasTech, hasNews) = await ProcessInstrumentAsync(db, dataService, scoringEngine, instrument, heatmapEntries, cotBatch, myFxBookSentiment, currencyOverrides, currencyStrength, _breakoutNotifier, _logger);
                         if (hasRetail) statsRetail++;
                         else statsNoRetail++;
                         if (hasCOT) statsCOT++;
@@ -187,10 +192,16 @@ namespace TradeHelper.Services
 
         private const string CurrencyStrengthNewsKey = "CurrencyStrengthNewsCache";
         private const string CurrencyStrengthNewsUpdatedKey = "CurrencyStrengthNewsUpdatedAt";
-        private const int CurrencyStrengthNewsCacheHours = 24;
 
-        private static async Task BuildAndStoreCurrencyStrengthAsync(ApplicationDbContext db, TrailBlazerDataService dataService, IServiceProvider sp)
+        private static async Task BuildAndStoreCurrencyStrengthAsync(ApplicationDbContext db, TrailBlazerDataService dataService, IServiceProvider sp, int newsCacheHours)
         {
+            var newsSetting = await db.SystemSettings.FirstOrDefaultAsync(s => s.Key == CurrencyStrengthNewsKey);
+            var updatedSetting = await db.SystemSettings.FirstOrDefaultAsync(s => s.Key == CurrencyStrengthNewsUpdatedKey);
+            if (newsSetting != null && !string.IsNullOrEmpty(newsSetting.Value) && updatedSetting != null
+                && DateTime.TryParse(updatedSetting.Value, null, System.Globalization.DateTimeStyles.RoundtripKind, out var cacheUpdated)
+                && (DateTime.UtcNow - cacheUpdated).TotalHours < newsCacheHours)
+                return;
+
             var ml = sp.GetService<MLModelService>();
             if (ml == null) return;
 
@@ -213,11 +224,11 @@ namespace TradeHelper.Services
                 db.SystemSettings.Add(new SystemSetting { Key = CurrencyStrengthNewsKey, Value = json, UpdatedAt = now });
             }
 
-            var updatedSetting = await db.SystemSettings.FirstOrDefaultAsync(s => s.Key == CurrencyStrengthNewsUpdatedKey);
-            if (updatedSetting != null)
+            var updatedAtRow = await db.SystemSettings.FirstOrDefaultAsync(s => s.Key == CurrencyStrengthNewsUpdatedKey);
+            if (updatedAtRow != null)
             {
-                updatedSetting.Value = now.ToString("o");
-                updatedSetting.UpdatedAt = now;
+                updatedAtRow.Value = now.ToString("o");
+                updatedAtRow.UpdatedAt = now;
             }
             else
             {
@@ -226,7 +237,7 @@ namespace TradeHelper.Services
             await db.SaveChangesAsync();
         }
 
-        private static async Task<Dictionary<string, double>> LoadCombinedCurrencyStrengthAsync(ApplicationDbContext db, List<TradeHelper.Models.EconomicHeatmapEntry> entries)
+        private static async Task<Dictionary<string, double>> LoadCombinedCurrencyStrengthAsync(ApplicationDbContext db, List<TradeHelper.Models.EconomicHeatmapEntry> entries, int newsCacheHours)
         {
             var fundamentalByCurrency = entries
                 .GroupBy(e => e.Currency)
@@ -244,7 +255,7 @@ namespace TradeHelper.Services
             Dictionary<string, double>? newsScores = null;
             if (newsSetting != null && !string.IsNullOrEmpty(newsSetting.Value) && updatedSetting != null
                 && DateTime.TryParse(updatedSetting.Value, null, System.Globalization.DateTimeStyles.RoundtripKind, out var updated)
-                && (DateTime.UtcNow - updated).TotalHours < CurrencyStrengthNewsCacheHours)
+                && (DateTime.UtcNow - updated).TotalHours < newsCacheHours)
             {
                 try
                 {
@@ -282,6 +293,14 @@ namespace TradeHelper.Services
             return result;
         }
 
+        /// <summary>True if persisted score used web news (legacy tag Brave/Finnhub or current Yahoo/Finnhub/Brave).</summary>
+        private static bool NewsDataSourceInScore(string? dataSources)
+        {
+            if (string.IsNullOrEmpty(dataSources)) return false;
+            return dataSources.Contains("Yahoo/Finnhub/Brave", StringComparison.OrdinalIgnoreCase)
+                   || dataSources.Contains("Brave/Finnhub", StringComparison.OrdinalIgnoreCase);
+        }
+
         private static async Task<(bool hasRetail, bool hasCOT, bool hasTech, bool hasNews)> ProcessInstrumentAsync(
             ApplicationDbContext db,
             TrailBlazerDataService dataService,
@@ -292,6 +311,7 @@ namespace TradeHelper.Services
             IReadOnlyDictionary<string, (double longPct, double shortPct)> myFxBookSentiment,
             IReadOnlyDictionary<string, double> currencyOverrides,
             IReadOnlyDictionary<string, double> currencyStrength,
+            IBreakoutSignalNotifier? breakoutNotifier,
             ILogger logger)
         {
             var dataSources = new List<string>();
@@ -391,7 +411,7 @@ namespace TradeHelper.Services
             var effectiveNewsScore = newsSentimentScore;
             if (hasNewsSentiment)
             {
-                dataSources.Add("Brave/Finnhub");
+                dataSources.Add("Yahoo/Finnhub/Brave");
                 if (newsItems.Count > 0)
                 {
                     var now = DateTime.UtcNow;
@@ -417,15 +437,15 @@ namespace TradeHelper.Services
             else
             {
                 logger.LogDebug("TrailBlazer: no news sentiment for {Instrument}; not posting news to database", instrument.Name);
-                if (latestScore != null && (latestScore.DataSources ?? "").Contains("Brave/Finnhub", StringComparison.OrdinalIgnoreCase))
+                if (latestScore != null && NewsDataSourceInScore(latestScore.DataSources))
                 {
                     effectiveNewsScore = latestScore.NewsSentimentScore;
-                    dataSources.Add("Brave/Finnhub");
+                    dataSources.Add("Yahoo/Finnhub/Brave");
                 }
             }
 
             var hasRetail = dataSources.Contains("myfxbook");
-            var hasNews = dataSources.Contains("Brave/Finnhub");
+            var hasNews = dataSources.Contains("Yahoo/Finnhub/Brave");
             var hasCOT = cotReport != null || syntheticCOTScore.HasValue;
             var weightContext = new ScoringWeightContext(
                 instrument.AssetClass,
@@ -496,8 +516,12 @@ namespace TradeHelper.Services
                 logger.LogDebug("TrailBlazer: {Instrument} COT score preserved from prior ({Score:F1})", instrument.Name, score.COTScore);
             }
 
+            await dataService.ApplyBoxBreakoutTradeSetupAsync(score, instrument.Name);
+            if (breakoutNotifier != null)
+                await breakoutNotifier.TryNotifyStrongSignalAsync(score, instrument.Name);
+
             db.TrailBlazerScores.Add(score);
-            var hasTechnicalSource = dataSources.Contains("TwelveData") || dataSources.Contains("MarketStack") || dataSources.Contains("iTick") || dataSources.Contains("EODHD") || dataSources.Contains("FMP") || dataSources.Contains("NasdaqDataLink");
+            var hasTechnicalSource = dataSources.Contains("YahooFinance") || dataSources.Contains("TwelveData") || dataSources.Contains("MarketStack") || dataSources.Contains("iTick") || dataSources.Contains("EODHD") || dataSources.Contains("FMP") || dataSources.Contains("NasdaqDataLink");
             logger.LogDebug("TrailBlazer: score saved for {Instrument} (sources: {Sources})", instrument.Name, string.Join(", ", dataSources));
             return (dataSources.Contains("myfxbook"), hasCOT, hasTechnicalSource, hasNews);
         }

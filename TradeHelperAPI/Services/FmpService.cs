@@ -221,6 +221,8 @@ namespace TradeHelper.Services
                     if (item.TryGetProperty("close", out var c) && c.TryGetDouble(out var cv) && cv > 0)
                         closes.Add(cv);
                 }
+                // FMP returns oldest-first; correlation/returns expect newest-first (index 0 = latest bar).
+                closes.Reverse();
                 return closes;
             }
             catch (Exception ex)

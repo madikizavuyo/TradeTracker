@@ -3,6 +3,7 @@ using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Configuration;
 using TradeHelper.Data;
 using TradeHelper.Models;
 using TradeHelper.Services;
@@ -22,9 +23,10 @@ namespace TradeHelper.Controllers
         private readonly MLModelService _mlModelService;
         private readonly WorldBankDataService? _worldBankService;
         private readonly IWebHostEnvironment _env;
+        private readonly IConfiguration _configuration;
         private readonly ILogger<TrailBlazerController> _logger;
 
-        public TrailBlazerController(ApplicationDbContext context, IServiceProvider serviceProvider, TrailBlazerDataService dataService, TrailBlazerRefreshProgressService progress, OecdDataService oecdDataService, MLModelService mlModelService, IWebHostEnvironment env, ILogger<TrailBlazerController> logger, WorldBankDataService? worldBankService = null)
+        public TrailBlazerController(ApplicationDbContext context, IServiceProvider serviceProvider, TrailBlazerDataService dataService, TrailBlazerRefreshProgressService progress, OecdDataService oecdDataService, MLModelService mlModelService, IWebHostEnvironment env, IConfiguration configuration, ILogger<TrailBlazerController> logger, WorldBankDataService? worldBankService = null)
         {
             _context = context;
             _serviceProvider = serviceProvider;
@@ -34,6 +36,7 @@ namespace TradeHelper.Controllers
             _mlModelService = mlModelService;
             _worldBankService = worldBankService;
             _env = env;
+            _configuration = configuration;
             _logger = logger;
         }
 
@@ -76,7 +79,9 @@ namespace TradeHelper.Controllers
                     s.CurrencyStrengthScore,
                     s.DataSources,
                     s.DateComputed,
-                    s.TechnicalDataDateCollected
+                    s.TechnicalDataDateCollected,
+                    tradeSetupSignal = s.TradeSetupSignal,
+                    tradeSetupDetail = s.TradeSetupDetail
                 })
                 .ToList();
 
@@ -111,7 +116,9 @@ namespace TradeHelper.Controllers
                 score.EconomicScore,
                 score.DataSources,
                 score.DateComputed,
-                score.TechnicalDataDateCollected
+                score.TechnicalDataDateCollected,
+                tradeSetupSignal = score.TradeSetupSignal,
+                tradeSetupDetail = score.TradeSetupDetail
             });
         }
 
@@ -346,11 +353,12 @@ namespace TradeHelper.Controllers
                 });
 
             Dictionary<string, double>? newsScores = null;
+            var newsCacheHours = _configuration.GetValue("TrailBlazer:CurrencyStrengthNewsCacheHours", 48);
             var newsSetting = await _context.SystemSettings.FirstOrDefaultAsync(s => s.Key == "CurrencyStrengthNewsCache");
             var updatedSetting = await _context.SystemSettings.FirstOrDefaultAsync(s => s.Key == "CurrencyStrengthNewsUpdatedAt");
             if (newsSetting != null && !string.IsNullOrEmpty(newsSetting.Value) && updatedSetting != null
                 && DateTime.TryParse(updatedSetting.Value, null, System.Globalization.DateTimeStyles.RoundtripKind, out var updated)
-                && (DateTime.UtcNow - updated).TotalHours < 24)
+                && (DateTime.UtcNow - updated).TotalHours < newsCacheHours)
             {
                 try
                 {
@@ -384,8 +392,8 @@ namespace TradeHelper.Controllers
             if (latestDate == null)
                 return Ok(Array.Empty<object>());
 
-            // Return latest batch only (entries from same collection run, within 5 min of max)
-            var batchCutoff = latestDate.Value.AddMinutes(-5);
+            // Return latest batch only (entries from same collection run; window tolerates staggered writes)
+            var batchCutoff = latestDate.Value.AddMinutes(-30);
             var entries = await _context.EconomicHeatmapEntries
                 .Where(e => e.DateCollected >= batchCutoff)
                 .Select(e => new
@@ -903,10 +911,10 @@ namespace TradeHelper.Controllers
             });
         }
 
-        /// <summary>Manually trigger TrailBlazer refresh. useBrave=true (default) forces Brave for currency strength so it runs on demand; 24h block is set after refresh completes.</summary>
+        /// <summary>Manually trigger TrailBlazer refresh. useBrave=true forces Brave for currency strength on demand; default false avoids Brave token use. Cooldown after a Brave run is TrailBlazer:BraveCooldownHours (default 48).</summary>
         [Authorize(Roles = "Admin")]
         [HttpPost("refresh")]
-        public Task<IActionResult> Refresh([FromQuery] bool useBrave = true)
+        public Task<IActionResult> Refresh([FromQuery] bool useBrave = false)
         {
             try
             {

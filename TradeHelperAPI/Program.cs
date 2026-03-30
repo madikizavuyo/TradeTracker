@@ -14,6 +14,8 @@ using TradeHelper.Models;
 using TradeHelper.Services;
 
 var builder = WebApplication.CreateBuilder(args);
+// Optional local overrides (real keys); file is gitignored — see SECRETS.md
+builder.Configuration.AddJsonFile("appsettings.Local.json", optional: true, reloadOnChange: true);
 
 // Database logging: persist ILogger output to ApplicationLogs table (enabled in Production for refresh failure diagnosis)
 builder.Services.AddSingleton<ILoggerProvider>(sp => new DbLoggerProvider(sp, sp.GetRequiredService<IConfiguration>()));
@@ -108,12 +110,14 @@ builder.Services.AddHostedService<DailyPredictionService>();
 
 // TrailBlazer Services
 builder.Services.AddSingleton<TrailBlazerRefreshProgressService>();
+builder.Services.AddSingleton<IBreakoutSignalNotifier, BreakoutSignalNotifier>();
 builder.Services.AddHttpClient<TwelveDataService>();
 builder.Services.AddHttpClient<MarketStackService>();
 builder.Services.AddHttpClient<iTickService>();
 builder.Services.AddHttpClient<EodhdService>();
 builder.Services.AddHttpClient<FmpService>();
 builder.Services.AddHttpClient<NasdaqDataLinkService>();
+builder.Services.AddHttpClient<YahooFinanceService>();
 builder.Services.AddHttpClient<TrailBlazerDataService>()
     .AddTypedClient((http, sp) => new TrailBlazerDataService(
         http,
@@ -127,6 +131,7 @@ builder.Services.AddHttpClient<TrailBlazerDataService>()
         sp.GetService<EodhdService>(),
         sp.GetService<FmpService>(),
         sp.GetService<NasdaqDataLinkService>(),
+        sp.GetService<YahooFinanceService>(),
         sp.GetService<IMemoryCache>()));
 builder.Services.AddHttpClient<OecdDataService>();
 builder.Services.AddHttpClient<WorldBankDataService>();

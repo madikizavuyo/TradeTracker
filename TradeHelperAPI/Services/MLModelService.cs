@@ -1,31 +1,78 @@
 // MLModelService.cs – Predicts the bias score based on indicator data using Google Gemini API
 using System.Text;
 using System.Text.Json;
+using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Caching.Memory;
+using Microsoft.Extensions.DependencyInjection;
+using TradeHelper.Data;
 using TradeHelper.Models;
 
 namespace TradeHelper.Services
 {
     public class MLModelService
     {
+        private const string GeminiLastCallKey = "GeminiLastCallUtc";
+
         private readonly HttpClient _httpClient;
         private readonly string _apiKey;
         private readonly IConfiguration _configuration;
         private readonly ILogger<MLModelService> _logger;
         private readonly IMemoryCache? _cache;
+        private readonly IServiceScopeFactory _scopeFactory;
 
-        public MLModelService(HttpClient httpClient, IConfiguration configuration, ILogger<MLModelService> logger, IMemoryCache? cache = null)
+        private int GeminiCooldownHours => _configuration.GetValue("Google:GeminiCooldownHours", 48);
+
+        public MLModelService(HttpClient httpClient, IConfiguration configuration, ILogger<MLModelService> logger, IServiceScopeFactory scopeFactory, IMemoryCache? cache = null)
         {
             _httpClient = httpClient;
             _configuration = configuration;
             _logger = logger;
+            _scopeFactory = scopeFactory;
             _cache = cache;
             _apiKey = configuration["Google:ApiKey"] ?? throw new InvalidOperationException("Google API key not configured");
+        }
+
+        /// <summary>True if a Gemini API call was made within the configured cooldown window (default 48h). Skips all Gemini HTTP calls to control token cost.</summary>
+        private async Task<bool> IsGeminiCooldownActiveAsync()
+        {
+            using var scope = _scopeFactory.CreateScope();
+            var db = scope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
+            var setting = await db.SystemSettings.FirstOrDefaultAsync(s => s.Key == GeminiLastCallKey);
+            if (setting == null || string.IsNullOrEmpty(setting.Value)) return false;
+            if (!DateTime.TryParse(setting.Value, null, System.Globalization.DateTimeStyles.RoundtripKind, out var lastCall))
+                return false;
+            var elapsed = (DateTime.UtcNow - lastCall).TotalHours;
+            if (elapsed < GeminiCooldownHours)
+            {
+                _logger.LogInformation("Gemini: skipping API (cooldown {Elapsed:F1}h / {Hours}h)", elapsed, GeminiCooldownHours);
+                return true;
+            }
+            return false;
+        }
+
+        private async Task RecordGeminiCallAsync()
+        {
+            using var scope = _scopeFactory.CreateScope();
+            var db = scope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
+            var now = DateTime.UtcNow.ToString("o");
+            var setting = await db.SystemSettings.FirstOrDefaultAsync(s => s.Key == GeminiLastCallKey);
+            if (setting != null)
+            {
+                setting.Value = now;
+                setting.UpdatedAt = DateTime.UtcNow;
+            }
+            else
+                db.SystemSettings.Add(new SystemSetting { Key = GeminiLastCallKey, Value = now, UpdatedAt = DateTime.UtcNow });
+            await db.SaveChangesAsync();
+            _logger.LogDebug("Gemini: recorded call time; next allowed after {Hours}h", GeminiCooldownHours);
         }
 
         public async Task<double> PredictBiasAsync(IndicatorData data)
         {
             if (!_configuration.GetValue("Google:UseAIPrediction", false))
+                return PredictBiasFallback(data);
+
+            if (await IsGeminiCooldownActiveAsync())
                 return PredictBiasFallback(data);
 
             try
@@ -48,7 +95,10 @@ namespace TradeHelper.Services
                     {
                         var text = candidates[0].GetProperty("content").GetProperty("parts")[0].GetProperty("text").GetString();
                         if (double.TryParse(text?.Trim(), out double score))
+                        {
+                            await RecordGeminiCallAsync();
                             return Math.Max(1, Math.Min(10, score));
+                        }
                     }
                 }
             }
@@ -75,6 +125,9 @@ namespace TradeHelper.Services
 
         public async Task<string> ExtractTradesFromPdfTextAsync(string pdfText)
         {
+            if (await IsGeminiCooldownActiveAsync())
+                return "[]";
+
             try
             {
                 if (pdfText.Length > 80_000)
@@ -101,7 +154,11 @@ PDF Text:
                     if (candidates.GetArrayLength() > 0)
                     {
                         var text = candidates[0].GetProperty("content").GetProperty("parts")[0].GetProperty("text").GetString();
-                        return text ?? "[]";
+                        if (text != null)
+                        {
+                            await RecordGeminiCallAsync();
+                            return text;
+                        }
                     }
                 }
             }
@@ -121,6 +178,9 @@ PDF Text:
                 if (_cache.TryGetValue(key, out string? cached))
                     return cached;
             }
+
+            if (await IsGeminiCooldownActiveAsync())
+                return null;
 
             try
             {
@@ -180,6 +240,7 @@ Output format (strict):
                                 if (!string.IsNullOrEmpty(result))
                                 {
                                     _logger.LogDebug("GenerateInstrumentAnalysisAsync succeeded with model {Model}", model);
+                                    await RecordGeminiCallAsync();
                                     if (_cache != null && instrumentId.HasValue && scoreDateComputed.HasValue && cacheMins > 0)
                                     {
                                         var key = $"analysis:{instrumentId}:{scoreDateComputed.Value:yyyyMMddHH}";
@@ -216,6 +277,9 @@ Output format (strict):
         {
             var headlines = headlineSummaries.Take(15).ToList();
             if (headlines.Count == 0) return null;
+
+            if (await IsGeminiCooldownActiveAsync())
+                return null;
 
             var headlinesText = string.Join("\n", headlines.Select((h, i) => $"{i + 1}. {h}"));
 
@@ -263,7 +327,12 @@ Reply ONLY with a JSON object, no other text. Example format:
                     if (prop.Value.TryGetDouble(out var val))
                         result[prop.Name] = Math.Clamp(val, 1.0, 10.0);
                 }
-                return result.Count > 0 ? result : null;
+                if (result.Count > 0)
+                {
+                    await RecordGeminiCallAsync();
+                    return result;
+                }
+                return null;
             }
             catch (Exception ex)
             {

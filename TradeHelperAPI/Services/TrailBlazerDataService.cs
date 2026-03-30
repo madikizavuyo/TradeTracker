@@ -3,6 +3,7 @@ using System.Text.RegularExpressions;
 using HtmlAgilityPack;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Caching.Memory;
+using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using TradeHelper.Data;
 using TradeHelper.Models;
@@ -19,7 +20,6 @@ namespace TradeHelper.Services
 
         private const string MyFxBookSessionKey = "MyFXBookSession";
         private const string BraveLastCallKey = "BraveLastCallUtc";
-        private const int BraveCooldownHours = 24;
 
         /// <summary>When true, Brave calls set a flag instead of recording immediately; block is recorded at end of refresh (after currency strength).</summary>
         private static volatile bool _braveRefreshContext;
@@ -36,6 +36,7 @@ namespace TradeHelper.Services
         private readonly EodhdService? _eodhdService;
         private readonly FmpService? _fmpService;
         private readonly NasdaqDataLinkService? _nasdaqDataLinkService;
+        private readonly YahooFinanceService? _yahooFinanceService;
         private readonly IMemoryCache? _cache;
         private readonly IServiceScopeFactory _scopeFactory;
         private readonly ApiRateLimitService _rateLimit;
@@ -48,8 +49,10 @@ namespace TradeHelper.Services
         private string MyFxBookEmail => _config["TrailBlazer:MyFXBookEmail"] ?? _config["MyFXBook:Email"] ?? "";
         private string MyFxBookPassword => _config["TrailBlazer:MyFXBookPassword"] ?? _config["MyFXBook:Password"] ?? "";
         private string? MyFxBookSession => _config["TrailBlazer:MyFXBookSession"] ?? _config["MyFXBook:Session"];
+        private int BraveCooldownHours => _config.GetValue("TrailBlazer:BraveCooldownHours", 48);
+        private int BraveOutlookCacheMinutes => _config.GetValue("TrailBlazer:BraveOutlookCacheMinutes", 2880);
 
-        public TrailBlazerDataService(HttpClient client, IConfiguration config, ILogger<TrailBlazerDataService> logger, IServiceScopeFactory scopeFactory, ApiRateLimitService rateLimit, TwelveDataService? twelveDataService = null, MarketStackService? marketStackService = null, iTickService? iTickService = null, EodhdService? eodhdService = null, FmpService? fmpService = null, NasdaqDataLinkService? nasdaqDataLinkService = null, IMemoryCache? cache = null)
+        public TrailBlazerDataService(HttpClient client, IConfiguration config, ILogger<TrailBlazerDataService> logger, IServiceScopeFactory scopeFactory, ApiRateLimitService rateLimit, TwelveDataService? twelveDataService = null, MarketStackService? marketStackService = null, iTickService? iTickService = null, EodhdService? eodhdService = null, FmpService? fmpService = null, NasdaqDataLinkService? nasdaqDataLinkService = null, YahooFinanceService? yahooFinanceService = null, IMemoryCache? cache = null)
         {
             _client = client;
             _config = config;
@@ -62,6 +65,7 @@ namespace TradeHelper.Services
             _eodhdService = eodhdService;
             _fmpService = fmpService;
             _nasdaqDataLinkService = nasdaqDataLinkService;
+            _yahooFinanceService = yahooFinanceService;
             _cache = cache;
             _client.Timeout = TimeSpan.FromSeconds(30);
         }
@@ -130,6 +134,52 @@ namespace TradeHelper.Services
             catch (Exception ex)
             {
                 _logger.LogWarning(ex, "FRED YoY fetch failed for {SeriesId}", seriesId);
+                return null;
+            }
+        }
+
+        /// <summary>
+        /// YoY % using observation dates: latest value vs closest observation on or before ~1 year earlier.
+        /// Handles missing FRED values ("."), mixed revisions, and avoids wrong offsets when dots break fixed indices.
+        /// </summary>
+        private async Task<double?> FetchFredYoYPercentCalendarAsync(string seriesId, int fetchLimit = 120)
+        {
+            if (string.IsNullOrEmpty(FredApiKey)) return null;
+            if (await _rateLimit.IsBlockedAsync("FRED")) return null;
+            try
+            {
+                var url = $"https://api.stlouisfed.org/fred/series/observations?series_id={seriesId}&api_key={FredApiKey}&file_type=json&sort_order=desc&limit={fetchLimit}";
+                var json = await _client.GetStringAsync(url);
+                using var doc = JsonDocument.Parse(json);
+                if (doc.RootElement.TryGetProperty("error_message", out var errMsg))
+                {
+                    var msg = errMsg.GetString();
+                    if (ApiRateLimitService.IsCreditLimitMessage(msg ?? ""))
+                        await _rateLimit.SetBlockedAsync("FRED");
+                    return null;
+                }
+                var observations = doc.RootElement.GetProperty("observations");
+                var points = new List<(DateTime Date, double Val)>();
+                foreach (var el in observations.EnumerateArray())
+                {
+                    var ds = el.GetProperty("date").GetString();
+                    var vs = el.GetProperty("value").GetString();
+                    if (string.IsNullOrEmpty(ds) || vs == "." || string.IsNullOrEmpty(vs)) continue;
+                    if (!double.TryParse(vs, System.Globalization.NumberStyles.Any, System.Globalization.CultureInfo.InvariantCulture, out var v)) continue;
+                    if (!DateTime.TryParse(ds, System.Globalization.CultureInfo.InvariantCulture, System.Globalization.DateTimeStyles.None, out var d)) continue;
+                    points.Add((d, v));
+                }
+                if (points.Count < 2) return null;
+                var (d0, v0) = points[0];
+                if (v0 == 0) return null;
+                var cutoff = d0.AddYears(-1);
+                var prior = points.Where(p => p.Date <= cutoff).OrderByDescending(p => p.Date).FirstOrDefault();
+                if (prior == default || prior.Val == 0) return null;
+                return ((v0 - prior.Val) / prior.Val) * 100.0;
+            }
+            catch (Exception ex)
+            {
+                _logger.LogDebug(ex, "FRED calendar YoY failed for {SeriesId}", seriesId);
                 return null;
             }
         }
@@ -505,13 +555,30 @@ namespace TradeHelper.Services
             return batch.TryGetValue(symbol, out var r) ? r : null;
         }
 
-        // ────── News (Finnhub first to save Brave quota; Brave fallback for instrument-specific) ──────
+        // ────── News (Yahoo first — no API key; Finnhub; Brave last) ──────
 
         public async Task<List<NewsItem>> FetchNewsForSymbolAsync(string symbol, string? assetClass)
         {
             var items = new List<NewsItem>();
 
-            // Finnhub first (free) — saves Brave API calls during background refresh
+            if (_yahooFinanceService != null)
+            {
+                try
+                {
+                    items = await _yahooFinanceService.FetchNewsForInstrumentAsync(symbol, assetClass);
+                    if (items.Count > 0)
+                    {
+                        _logger.LogDebug("News for {Symbol}: {Count} items from Yahoo Finance", symbol, items.Count);
+                        return items;
+                    }
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogDebug(ex, "Yahoo news failed for {Symbol}, trying Finnhub", symbol);
+                }
+            }
+
+            // Finnhub (free) when Yahoo empty
             if (!string.IsNullOrEmpty(FinnhubApiKey) && !await _rateLimit.IsBlockedAsync("Finnhub"))
             {
                 var category = (assetClass ?? "").StartsWith("Forex", StringComparison.OrdinalIgnoreCase) ? "forex" : "general";
@@ -625,16 +692,16 @@ namespace TradeHelper.Services
         /// <summary>When true, manual refresh will try Brave for currency strength even when Finnhub has data. Ensures Brave runs on demand; block is set after refresh.</summary>
         public static void SetForceBraveForRefresh(bool force) => _forceBraveForRefresh = force;
 
-        /// <summary>Call at end of refresh (after currency strength). Records 24h block if Brave was used during this refresh.</summary>
+        /// <summary>Call at end of refresh (after currency strength). Records cooldown block if Brave was used during this refresh.</summary>
         public async Task RecordBraveRefreshCompleteIfUsedAsync()
         {
             if (!_braveUsedThisRefresh) return;
             await RecordBraveCallAsync();
             _braveUsedThisRefresh = false;
-            _logger.LogInformation("Brave API: 24h cooldown set after refresh (news/currency strength completed)");
+            _logger.LogInformation("Brave API: {Hours}h cooldown set after refresh (news/currency strength completed)", BraveCooldownHours);
         }
 
-        /// <summary>Returns true if Brave was called within the last 24h (cooldown active). Skips Brave to reduce API costs.</summary>
+        /// <summary>Returns true if Brave was called within the configured cooldown window (default 48h). Skips Brave to reduce API costs.</summary>
         private async Task<bool> IsBraveCooldownActiveAsync()
         {
             using var scope = _scopeFactory.CreateScope();
@@ -802,7 +869,7 @@ namespace TradeHelper.Services
             return results;
         }
 
-        /// <summary>Fetches market outlook/forecast snippets for an instrument via Brave web search. Cached 1h per symbol.</summary>
+        /// <summary>Fetches market outlook/forecast snippets for an instrument via Brave web search. Cached per TrailBlazer:BraveOutlookCacheMinutes (default 48h).</summary>
         public async Task<List<WebSearchResult>> FetchInstrumentOutlookAsync(string symbol, string? assetClass)
         {
             var cacheKey = $"brave_outlook:{symbol}:{assetClass ?? ""}";
@@ -811,8 +878,9 @@ namespace TradeHelper.Services
 
             var query = BuildOutlookSearchQuery(symbol, assetClass);
             var results = await BraveWebSearchAsync(query, 3, "pm");
+            var ttl = TimeSpan.FromMinutes(Math.Max(1, BraveOutlookCacheMinutes));
             if (_cache != null && results.Count > 0)
-                _cache.Set(cacheKey, results, TimeSpan.FromMinutes(60));
+                _cache.Set(cacheKey, results, ttl);
             return results;
         }
 
@@ -869,9 +937,9 @@ namespace TradeHelper.Services
             return $"{symbol} market news";
         }
 
-        // ────── Technical Indicators (Twelve Data only) ──────
+        // ────── Technical Indicators (Yahoo first when mappable, then MarketStack / Twelve Data / fallbacks) ──────
 
-        /// <summary>Fetches technical indicators. For indices uses MarketStack first (1 call); for forex/metals uses Twelve Data.</summary>
+        /// <summary>Fetches technical indicators. Yahoo Finance first for mapped symbols; then indices via MarketStack; then Twelve Data.</summary>
         public async Task<Dictionary<string, double>> FetchTechnicalIndicatorsAsync(string symbol)
         {
             var results = new Dictionary<string, double>(StringComparer.OrdinalIgnoreCase)
@@ -883,6 +951,20 @@ namespace TradeHelper.Services
                 ["EMA200"] = 0,
                 ["StochasticK"] = 50
             };
+
+            if (_yahooFinanceService != null && YahooFinanceService.ToYahooSymbol(symbol) != null)
+            {
+                var y = await _yahooFinanceService.FetchTechnicalIndicatorsAsync(symbol);
+                if (y.TryGetValue("RSI", out var yRsi) && yRsi > 0 && yRsi < 100) results["RSI"] = yRsi;
+                if (y.TryGetValue("EMA50", out var yE50) && yE50 != 0) results["EMA50"] = yE50;
+                if (y.TryGetValue("EMA200", out var yE200) && yE200 != 0) results["EMA200"] = yE200;
+                if (y.TryGetValue("MACD", out var yMacd) && yMacd != 0) results["MACD"] = yMacd;
+                if (y.TryGetValue("MACDSignal", out var ySig) && ySig != 0) results["MACDSignal"] = ySig;
+                if (y.TryGetValue("StochasticK", out var yStoch) && yStoch != 50) results["StochasticK"] = yStoch;
+                if (y.TryGetValue("Close", out var yClose) && yClose > 0) results["Close"] = yClose;
+                if (results.Values.Any(v => v != 0 && v != 50))
+                    return results;
+            }
 
             if (MarketStackService.ToMarketStackSymbol(symbol) != null && _marketStackService != null)
             {
@@ -908,7 +990,7 @@ namespace TradeHelper.Services
             return results;
         }
 
-        /// <summary>Fetches technical indicators. For indices tries MarketStack first (1 call); for forex/metals uses Twelve Data. Stores in DB.</summary>
+        /// <summary>Fetches technical indicators. Yahoo first; then MarketStack for indices; then Twelve Data and other fallbacks. Stores in DB.</summary>
         public async Task<(Dictionary<string, double> technicals, string? source)> FetchAndStoreTechnicalIndicatorsAsync(ApplicationDbContext db, int instrumentId, string symbol)
         {
             var results = new Dictionary<string, double>(StringComparer.OrdinalIgnoreCase)
@@ -922,8 +1004,40 @@ namespace TradeHelper.Services
             };
             string? sourceUsed = null;
 
-            // Primary for indices: MarketStack (1 API call, computes MACD/Stochastic locally)
-            if (MarketStackService.ToMarketStackSymbol(symbol) != null && _marketStackService != null)
+            // Primary: Yahoo Finance (free OHLC → same indicators as MarketStack; strong forex/crypto/index coverage)
+            if (_yahooFinanceService != null && YahooFinanceService.ToYahooSymbol(symbol) != null)
+            {
+                var y = await _yahooFinanceService.FetchTechnicalIndicatorsAsync(symbol);
+                if (y.TryGetValue("RSI", out var yrsi) && yrsi > 0 && yrsi < 100) results["RSI"] = yrsi;
+                if (y.TryGetValue("EMA50", out var ye50) && ye50 != 0) results["EMA50"] = ye50;
+                if (y.TryGetValue("EMA200", out var ye200) && ye200 != 0) results["EMA200"] = ye200;
+                if (y.TryGetValue("MACD", out var ym) && ym != 0) results["MACD"] = ym;
+                if (y.TryGetValue("MACDSignal", out var ys) && ys != 0) results["MACDSignal"] = ys;
+                if (y.TryGetValue("StochasticK", out var yst) && yst >= 0 && yst <= 100) results["StochasticK"] = yst;
+                if (y.TryGetValue("Close", out var ycl) && ycl > 0) results["Close"] = ycl;
+
+                var rsiVal = y.TryGetValue("RSI", out var yfR) && yfR > 0 && yfR < 100 ? yfR : (double?)null;
+                var sma14 = y.TryGetValue("SMA14", out var yfS14) && yfS14 != 0 ? yfS14 : (double?)null;
+                var sma50 = y.TryGetValue("SMA50", out var yfS50) && yfS50 != 0 ? yfS50 : (double?)null;
+                var ema50Val = y.TryGetValue("EMA50", out var yfE50) && yfE50 != 0 ? yfE50 : (double?)null;
+                var ema200Val = y.TryGetValue("EMA200", out var yfE200) && yfE200 != 0 ? yfE200 : (double?)null;
+                double? macdVal = y.TryGetValue("MACD", out var yfM) && yfM != 0 ? yfM : null;
+                double? macdSigVal = y.TryGetValue("MACDSignal", out var yfSg) && yfSg != 0 ? yfSg : null;
+                double? stochVal = y.TryGetValue("StochasticK", out var yfSk) && yfSk >= 0 && yfSk <= 100 ? yfSk : null;
+
+                if (rsiVal != null || sma14 != null || sma50 != null || ema50Val != null || ema200Val != null)
+                {
+                    sourceUsed = "YahooFinance";
+                    double? closeVal = y.TryGetValue("Close", out var yfC) && yfC > 0 ? yfC : (double?)null;
+                    if (!closeVal.HasValue && ema200Val.HasValue) { var q = await TryFetchCloseAsync(symbol); if (q > 0) closeVal = q; }
+                    await SaveTechnicalToDbAsync(db, instrumentId, symbol, rsiVal, sma14, sma50, ema50Val, ema200Val, closeVal, "YahooFinance", macdVal, macdSigVal, stochVal);
+                }
+                else
+                    _logger.LogDebug("Technicals: Yahoo returned no usable data for {Symbol}, trying other providers", symbol);
+            }
+
+            // Indices: MarketStack when Yahoo did not persist (API key path)
+            if (sourceUsed == null && MarketStackService.ToMarketStackSymbol(symbol) != null && _marketStackService != null)
             {
                 var ms = await _marketStackService.FetchTechnicalIndicatorsAsync(symbol);
                 if (ms.TryGetValue("RSI", out var rsi) && rsi > 0 && rsi < 100) results["RSI"] = rsi;
@@ -1170,10 +1284,22 @@ namespace TradeHelper.Services
             _logger.LogInformation("Technicals: saved for {Symbol} from {Source} (RSI={HasRsi}, MACD={HasMacd}, StochasticK={HasStoch})", symbol, source, rsiVal.HasValue, macdVal.HasValue, stochasticKVal.HasValue);
         }
 
-        /// <summary>Tries to fetch latest close price for price vs EMA200 comparison. Forex uses FetchForexQuoteAsync; indices/commodities use EODHD or FMP.</summary>
+        /// <summary>Tries to fetch latest close price for price vs EMA200 comparison. Yahoo first when mapped; then forex chain / EODHD / FMP.</summary>
         private async Task<double> TryFetchCloseAsync(string symbol)
         {
             var norm = symbol.Replace("/", "").Replace("_", "").Replace(" ", "").ToUpperInvariant();
+            if (_yahooFinanceService != null && YahooFinanceService.ToYahooSymbol(norm) != null)
+            {
+                try
+                {
+                    var yq = await _yahooFinanceService.FetchQuoteAsync(norm);
+                    if (yq > 0) return yq;
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogDebug(ex, "Yahoo quote failed for {Symbol} in TryFetchClose", norm);
+                }
+            }
             if (norm.Length >= 6 && norm.All(char.IsLetter))
             {
                 var quote = await FetchForexQuoteAsync(norm);
@@ -1199,22 +1325,65 @@ namespace TradeHelper.Services
             return await _twelveDataService.LoadTechnicalDataToDatabaseAsync(db, limit);
         }
 
+        /// <summary>Yahoo Finance first (CL=F, ^GSPC, etc.), then FMP. Closes are newest-first.</summary>
+        private async Task<List<double>> FetchHistoricalClosesForAnalyticsAsync(string instrumentName, int tradingDays)
+        {
+            var minNeed = Math.Max(25, tradingDays + 5);
+            if (_yahooFinanceService != null && YahooFinanceService.ToYahooSymbol(instrumentName) != null)
+            {
+                var y = await _yahooFinanceService.FetchHistoricalClosesNewestFirstAsync(instrumentName, minNeed + 30);
+                if (y.Count >= Math.Min(minNeed, Math.Max(25, tradingDays)))
+                    return y;
+            }
+            if (_fmpService != null)
+            {
+                var f = await _fmpService.FetchHistoricalClosesAsync(instrumentName, tradingDays + 15);
+                if (f.Count > 0)
+                    return f;
+            }
+            return new List<double>();
+        }
+
+        /// <summary>Box breakout + scanner fusion (Yahoo OHLC). Mutates score.</summary>
+        public async Task ApplyBoxBreakoutTradeSetupAsync(TrailBlazerScore score, string instrumentName)
+        {
+            score.TradeSetupSignal = "NONE";
+            score.TradeSetupDetail = null;
+            if (_yahooFinanceService == null || YahooFinanceService.ToYahooSymbol(instrumentName) == null)
+                return;
+            try
+            {
+                var bars = await _yahooFinanceService.FetchDailyOhlcAsync(instrumentName, 100);
+                if (bars == null || bars.Count < 25)
+                    return;
+                var lookback = _config.GetValue("TrailBlazer:BoxBreakoutLookback", 20);
+                var maxRangePct = _config.GetValue("TrailBlazer:BoxBreakoutMaxRangePct", 4.0);
+                var (sig, det) = BoxBreakoutSetupAnalyzer.Analyze(bars, score.OverallScore, score.Bias ?? "Neutral", lookback, maxRangePct);
+                score.TradeSetupSignal = sig;
+                score.TradeSetupDetail = det != null && det.Length > 500 ? det[..500] : det;
+            }
+            catch (Exception ex)
+            {
+                _logger.LogDebug(ex, "Box breakout setup failed for {Instrument}", instrumentName);
+            }
+        }
+
         private const string OilIndexCorrelationCacheKeyPrefix = "OilIndexCorrelation_";
 
-        /// <summary>Computes rolling correlation between USOIL and US500/US30. Returns correlation over 30 and 60 days. Uses FMP historical prices. Cached 1h.</summary>
+        /// <summary>Computes rolling correlation between USOIL and US500/US30. Yahoo historical closes first; FMP fallback. Cached 1h.</summary>
         public async Task<object> ComputeOilIndexCorrelationAsync(int window30 = 30, int window60 = 60)
         {
-            if (_fmpService == null)
-                return new { usoilUs500_30d = (double?)null, usoilUs500_60d = (double?)null, usoilUs30_30d = (double?)null, usoilUs30_60d = (double?)null, message = "FMP not configured" };
+            if (_yahooFinanceService == null && _fmpService == null)
+                return new { usoilUs500_30d = (double?)null, usoilUs500_60d = (double?)null, usoilUs30_30d = (double?)null, usoilUs30_60d = (double?)null, message = "No price history provider (enable Yahoo or FMP)" };
 
             var cacheKey = $"{OilIndexCorrelationCacheKeyPrefix}{window30}_{window60}";
             if (_cache != null && _cache.TryGetValue(cacheKey, out object? cached))
                 return cached!;
 
-            var days = Math.Max(window30, window60) + 5;
-            var oil = await _fmpService.FetchHistoricalClosesAsync("USOIL", days);
-            var sp500 = await _fmpService.FetchHistoricalClosesAsync("US500", days);
-            var dji = await _fmpService.FetchHistoricalClosesAsync("US30", days);
+            var days = Math.Max(window30, window60) + 10;
+            var oil = await FetchHistoricalClosesForAnalyticsAsync("USOIL", days);
+            var sp500 = await FetchHistoricalClosesForAnalyticsAsync("US500", days);
+            var dji = await FetchHistoricalClosesForAnalyticsAsync("US30", days);
 
             static List<double> ToReturns(List<double> closes)
             {
@@ -1257,7 +1426,8 @@ namespace TradeHelper.Services
                 usoilUs30_30d = n30 >= 10 ? PearsonCorr(retOil, retDji, n30) : (double?)null,
                 usoilUs30_60d = n60 >= 20 ? PearsonCorr(retOil, retDji, n60) : (double?)null,
                 dataPoints30 = n30,
-                dataPoints60 = n60
+                dataPoints60 = n60,
+                message = retOil.Count == 0 || retSp500.Count == 0 ? "Insufficient overlapping history (check Yahoo/FMP)" : (string?)null
             };
             if (_cache != null)
                 _cache.Set(cacheKey, result, TimeSpan.FromHours(1));
@@ -1266,7 +1436,7 @@ namespace TradeHelper.Services
 
         private const string RelativeStrengthCacheKeyPrefix = "RelativeStrength_";
 
-        /// <summary>Ranks assets by % price change over N days. Uses FMP historical prices. Cached 1h to avoid 503 from host timeout.</summary>
+        /// <summary>Ranks assets by % price change over N days. Yahoo closes first; FMP fallback. Cached 1h.</summary>
         public async Task<List<(string symbol, double pctChange5d, double pctChange20d)>> GetRelativeStrengthRankingAsync(int days5 = 5, int days20 = 20)
         {
             var cacheKey = $"{RelativeStrengthCacheKeyPrefix}{days5}_{days20}";
@@ -1276,11 +1446,11 @@ namespace TradeHelper.Services
             var symbols = new[] { "US500", "US30", "US100", "USOIL", "XAUUSD", "XAGUSD" };
             var results = new List<(string symbol, double pctChange5d, double pctChange20d)>();
 
-            if (_fmpService == null) return results;
+            if (_yahooFinanceService == null && _fmpService == null) return results;
 
             foreach (var sym in symbols)
             {
-                var closes = await _fmpService.FetchHistoricalClosesAsync(sym, Math.Max(days5, days20) + 5);
+                var closes = await FetchHistoricalClosesForAnalyticsAsync(sym, Math.Max(days5, days20) + 10);
                 if (closes.Count < Math.Max(days5, days20) + 1) continue;
 
                 var pct5 = closes.Count > days5 && closes[days5] > 0
@@ -1323,7 +1493,20 @@ namespace TradeHelper.Services
             var baseCcy = symbol[..3];
             var quoteCcy = symbol[3..];
 
-            // Try Finnhub first (real-time forex quote)
+            if (_yahooFinanceService != null && YahooFinanceService.ToYahooSymbol(symbol) != null)
+            {
+                try
+                {
+                    var yq = await _yahooFinanceService.FetchQuoteAsync(symbol);
+                    if (yq > 0) return yq;
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogDebug(ex, "Yahoo forex quote failed for {Symbol}, falling back", symbol);
+                }
+            }
+
+            // Finnhub (real-time forex quote)
             if (!string.IsNullOrEmpty(FinnhubApiKey))
             {
                 try
@@ -1446,10 +1629,32 @@ namespace TradeHelper.Services
             return 0;
         }
 
-        /// <summary>Fetches global economic news headlines for currency strength analysis. Finnhub first, Brave fallback when empty. When ForceBraveForRefresh, tries Brave first so it runs on manual refresh.</summary>
+        /// <summary>Fetches global economic news headlines for currency strength. Yahoo first (no key), then optional Brave-first on manual refresh, Finnhub, Brave fallback.</summary>
         public async Task<List<string>> FetchGlobalEconomicNewsAsync()
         {
             var headlines = new List<string>();
+            if (_yahooFinanceService != null)
+            {
+                try
+                {
+                    var yh = await _yahooFinanceService.FetchGlobalMacroHeadlinesAsync(25);
+                    foreach (var h in yh)
+                    {
+                        if (!string.IsNullOrWhiteSpace(h))
+                            headlines.Add(h);
+                    }
+                    if (headlines.Count > 0)
+                    {
+                        _logger.LogInformation("FetchGlobalEconomicNewsAsync: Yahoo returned {Count} headlines for currency strength", headlines.Count);
+                        return headlines;
+                    }
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogDebug(ex, "FetchGlobalEconomicNewsAsync Yahoo failed, continuing");
+                }
+            }
+
             var tryBraveFirst = _forceBraveForRefresh && _braveRefreshContext && !string.IsNullOrEmpty(BraveApiKey) && !await _rateLimit.IsBlockedAsync("Brave") && !await IsBraveCooldownActiveAsync();
             if (tryBraveFirst)
             {
@@ -1998,23 +2203,23 @@ namespace TradeHelper.Services
             {
                 ["USD"] = new() { ["GDP"] = "GDPC1", ["CPI"] = "CPIAUCSL", ["Unemployment"] = "UNRATE", ["InterestRate"] = "FEDFUNDS", ["PMI"] = "BSCICP03USM665S", ["Treasury10Y"] = "DGS10", ["DollarIndex"] = "DTWEXBGS", ["PCE"] = "PCEPI", ["JOLTs"] = "JTSJOL", ["JoblessClaims"] = "ICSA" },
                 ["EUR"] = new() { ["GDP"] = "EUNNGDP", ["CPI"] = "CP0000EZ19M086NEST", ["Unemployment"] = "LRHUTTTTEZM156S", ["InterestRate"] = "ECBDFR", ["PMI"] = "BSCICP03EZM665S" },
-                ["GBP"] = new() { ["GDP"] = "NAEXKP01GBA657S", ["CPI"] = "GBRCPIALLMINMEI", ["Unemployment"] = "LRHUTTTTGBM156S", ["InterestRate"] = "BOERUKM", ["PMI"] = "BSCICP03GBM665S" },
+                ["GBP"] = new() { ["GDP"] = "CLVMNACSCAB1GQGBM", ["CPI"] = "GBRCPIALLMINMEI", ["Unemployment"] = "LRHUTTTTGBM156S", ["InterestRate"] = "BOERUKM", ["PMI"] = "BSCICP03GBM665S" },
                 ["JPY"] = new() { ["GDP"] = "JPNRGDPEXP", ["CPI"] = "JPNCPIALLMINMEI", ["Unemployment"] = "LRHUTTTTJPM156S", ["InterestRate"] = "IRSTCB01JPM156N", ["PMI"] = "BSCICP03JPM665S" },
                 ["AUD"] = new() { ["GDP"] = "AUSGDPNQDSMEI", ["CPI"] = "AUSCPIALLQINMEI", ["Unemployment"] = "LRHUTTTTAUM156S", ["InterestRate"] = "IRSTCI01AUM156N", ["PMI"] = "BSCICP03AUM665S" },
-                ["NZD"] = new() { ["GDP"] = "NZLGDPNQDSMEI", ["CPI"] = "NZLCPIALLQINMEI", ["Unemployment"] = "LRHUTTTTNZA156N", ["InterestRate"] = "IRSTCI01NZM156N" },
-                ["CAD"] = new() { ["GDP"] = "NAEXKP01CAQ189S", ["CPI"] = "CANCPIALLMINMEI", ["Unemployment"] = "LRHUTTTTCAM156S", ["InterestRate"] = "IRSTCB01CAM156N" },
-                ["CHF"] = new() { ["GDP"] = "NAEXKP01CHA657S", ["CPI"] = "CHECPIALLMINMEI", ["Unemployment"] = "LRHUTTTTCHQ156S", ["InterestRate"] = "IRSTCI01CHM156N" },
-                ["SEK"] = new() { ["GDP"] = "CLVMNACSCAB1GQSE", ["CPI"] = "CP0000SEM086NEST", ["Unemployment"] = "LRHUTTTTSEM156S" },
+                ["NZD"] = new() { ["GDP"] = "NZLGDPNQDSMEI", ["CPI"] = "NZLCPIALLQINMEI", ["Unemployment"] = "LRHUTTTTNZA156N", ["InterestRate"] = "IRSTCI01NZM156N", ["PMI"] = "BSCICP03NZM665S" },
+                ["CAD"] = new() { ["GDP"] = "CLVMNACSCAB1GQCA", ["CPI"] = "CANCPIALLMINMEI", ["Unemployment"] = "LRHUTTTTCAM156S", ["InterestRate"] = "IRSTCB01CAM156N", ["PMI"] = "BSCICP03CAM665S" },
+                ["CHF"] = new() { ["GDP"] = "CLVMNACSCAB1GQCH", ["CPI"] = "CHECPIALLMINMEI", ["Unemployment"] = "LRHUTTTTCHQ156S", ["InterestRate"] = "IRSTCI01CHM156N", ["PMI"] = "BSCICP03CHM665S" },
+                ["SEK"] = new() { ["GDP"] = "CLVMNACSCAB1GQSE", ["CPI"] = "CP0000SEM086NEST", ["Unemployment"] = "LRHUTTTTSEM156S", ["InterestRate"] = "IRSTCB01SEM156N", ["PMI"] = "BSCICP03SEM665S" },
                 ["ZAR"] = new() { ["GDP"] = "ZAFGDPRQPSMEI", ["CPI"] = "ZAFCPIALLMINMEI", ["Unemployment"] = "LRUN64TTZAQ156S", ["InterestRate"] = "IRSTCB01ZAM156N", ["PMI"] = "BSCICP03ZAM665S" },
-                ["CNY"] = new() { ["GDP"] = "CHNGDPRAPSMEI", ["CPI"] = "CHNCPIALLMINMEI", ["InterestRate"] = "IRSTCB01CNM156N", ["PMI"] = "BSCICP03CNM665S" }
+                ["CNY"] = new() { ["GDP"] = "CHNGDPRAPSMEI", ["CPI"] = "CHNCPIALLMINMEI", ["Unemployment"] = "SLUEM1524ZSCHN", ["InterestRate"] = "IRSTCB01CNM156N", ["PMI"] = "BSCICP03CNM665S" }
             };
 
-            // CPI series that are quarterly (obs count 5); others are monthly (13)
+            // CPI series that are quarterly (legacy index YoY fallback uses 5 obs); others default monthly (13)
             var cpiQuarterlySeries = new HashSet<string>(StringComparer.OrdinalIgnoreCase) { "AUSCPIALLQINMEI", "NZLCPIALLQINMEI" };
             // GDP series that are already YoY growth rates (use raw fetch, not YoY calc)
             var gdpIsGrowthRate = new HashSet<string>(StringComparer.OrdinalIgnoreCase) { "ZAFGDPRQPSMEI", "CHNGDPRAPSMEI" };
-            // CPI series that are already YoY growth rates (use raw fetch, not YoY calc)
-            var cpiIsGrowthRate = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            // CPI series that are already YoY % (OECD MEI annual growth) — do not re-apply YoY
+            var cpiIsGrowthRate = new HashSet<string>(StringComparer.OrdinalIgnoreCase) { "CP0000EZ19M086NEST", "CP0000SEM086NEST" };
             // PMI uses OECD Business Confidence: 100=neutral (not 50 like ISM PMI)
             const double PmiNeutral = 100.0;
 
@@ -2029,7 +2234,8 @@ namespace TradeHelper.Services
                             value = await FetchFredDataAsync(seriesId);
                         else
                         {
-                            var yoy = await FetchFredYoYPercentAsync(seriesId, 5);
+                            var cal = await FetchFredYoYPercentCalendarAsync(seriesId);
+                            var yoy = cal ?? await FetchFredYoYPercentAsync(seriesId, 5);
                             value = yoy ?? 0;
                         }
                     }
@@ -2040,7 +2246,8 @@ namespace TradeHelper.Services
                         else
                         {
                             var obsCount = (indicator == "PCE" || cpiQuarterlySeries.Contains(seriesId)) ? 5 : 13;
-                            var yoy = await FetchFredYoYPercentAsync(seriesId, obsCount);
+                            var cal = await FetchFredYoYPercentCalendarAsync(seriesId);
+                            var yoy = cal ?? await FetchFredYoYPercentAsync(seriesId, obsCount);
                             value = yoy ?? 0;
                         }
                     }
@@ -2048,6 +2255,13 @@ namespace TradeHelper.Services
                     {
                         value = await FetchFredDataAsync(seriesId);
                     }
+
+                    if (indicator == "GDP" && value != 0 && (Math.Abs(value) > 22 || double.IsNaN(value) || double.IsInfinity(value)))
+                    {
+                        _logger.LogWarning("Heatmap GDP YoY implausible for {Currency} ({SeriesId}): {Value} — suppressed (check FRED series / frequency)", currency, seriesId, value);
+                        value = 0;
+                    }
+
                     await Task.Delay(100);
 
                     var impact = indicator switch

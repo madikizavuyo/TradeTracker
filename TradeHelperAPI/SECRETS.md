@@ -29,6 +29,9 @@ Add these to `appsettings.Development.json` or environment variables:
 | `TrailBlazer:MyFXBookEmail` / `MyFXBookPassword` | Retail sentiment. https://www.myfxbook.com/ |
 | `TrailBlazer:MyFXBookSession` | Optional. Use session ID directly instead of login (e.g. from browser cookie). Takes precedence over email/password. |
 | `TrailBlazer:ExchangeRateApiKey` | Currency conversion. https://www.exchangerate-api.com/ |
+| `TrailBlazer:YahooFinanceEnabled` | Default `true`. Yahoo Finance (unofficial chart/quote/news) as primary for technicals, forex quotes, and news when mappable; no API key. Set `false` to disable. |
+| `TrailBlazer:SignalAlertEmail` | Optional. If set and `Email:SmtpHost` / `Email:From` are configured, sends at most one email per instrument per 24h when a **STRONG_BUY** or **STRONG_SELL** box-breakout + scanner signal fires. |
+| `TrailBlazer:BoxBreakoutLookback` / `BoxBreakoutMaxRangePct` | Consolidation window (days) and max range % of mid-price to qualify as a “tight box” before breakout. |
 
 ## How to configure
 
@@ -58,8 +61,20 @@ Add these to `appsettings.Development.json` or environment variables:
 
 After any leak, **rotate the exposed keys** in the provider dashboards.
 
+## API cost controls (Gemini / Brave)
+
+| Setting | Default | Purpose |
+|---------|---------|---------|
+| `Google:GeminiCooldownHours` | 48 | After any successful Gemini call, further Gemini HTTP requests are skipped until this many hours pass. Stored in `SystemSettings` as `GeminiLastCallUtc`. |
+| `TrailBlazer:BraveCooldownHours` | 48 | Same pattern for Brave: `BraveLastCallUtc`. |
+| `TrailBlazer:BraveOutlookCacheMinutes` | 2880 (48h) | In-memory cache for per-symbol outlook Brave searches. |
+| `TrailBlazer:CurrencyStrengthNewsCacheHours` | 48 | How long Gemini-derived currency strength from news stays valid in DB before refresh may refetch news and call Gemini again. |
+
+To **force** an immediate run (e.g. after changing prompts), delete the corresponding row from `SystemSettings` for `GeminiLastCallUtc` and/or `BraveLastCallUtc`, or set `Value` to an old ISO timestamp.
+
 ## Security notes
 
+- **`appsettings.json` in the repo** has **no real API keys or passwords** (placeholders and LocalDB). For local development, create **`appsettings.Local.json`** in `TradeHelperAPI/` with your connection string, JWT key, TrailBlazer keys, SMTP, etc. That file is **gitignored** and is merged in after `appsettings.json` (see `Program.cs`).
 - `appsettings.Development.json` is in `.gitignore` – never force-add it.
 - For stronger security, use **User Secrets** instead of appsettings.Development.json:
   ```powershell

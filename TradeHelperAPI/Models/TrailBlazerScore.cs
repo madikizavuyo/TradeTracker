@@ -38,5 +38,13 @@ namespace TradeHelper.Models
 
         /// <summary>When technical data was last successfully pulled (from TechnicalIndicators.DateCollected).</summary>
         public DateTime? TechnicalDataDateCollected { get; set; }
+
+        /// <summary>Box breakout + scanner fusion: NONE, WATCH, BUY, STRONG_BUY, SELL, STRONG_SELL.</summary>
+        [MaxLength(32)]
+        public string? TradeSetupSignal { get; set; }
+
+        /// <summary>One-line rationale for UI and optional email alert.</summary>
+        [MaxLength(500)]
+        public string? TradeSetupDetail { get; set; }
     }
 }

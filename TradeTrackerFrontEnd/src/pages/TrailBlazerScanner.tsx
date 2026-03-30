@@ -122,12 +122,25 @@ export default function TrailBlazerScanner() {
     const hasData = key === 'retail'
       ? hasDataSource(score.dataSources, 'myfxbook') || hasDataSource(score.dataSources, 'load-myfxbook')
       : key === 'technical'
-      ? hasDataSource(score.dataSources, 'TwelveData') || hasDataSource(score.dataSources, 'MarketStack') || hasDataSource(score.dataSources, 'iTick') || hasDataSource(score.dataSources, 'EODHD') || hasDataSource(score.dataSources, 'FMP') || hasDataSource(score.dataSources, 'NasdaqDataLink')
+      ? hasDataSource(score.dataSources, 'YahooFinance') || hasDataSource(score.dataSources, 'TwelveData') || hasDataSource(score.dataSources, 'MarketStack') || hasDataSource(score.dataSources, 'iTick') || hasDataSource(score.dataSources, 'EODHD') || hasDataSource(score.dataSources, 'FMP') || hasDataSource(score.dataSources, 'NasdaqDataLink')
+      : key === 'news'
+      ? hasDataSource(score.dataSources, 'Yahoo/Finnhub/Brave') || hasDataSource(score.dataSources, 'Brave/Finnhub')
       : hasDataSource(score.dataSources, source);
     if (!hasData) return <span className="text-muted-foreground">N/A</span>;
     if (key === 'currency' && (score.currencyStrengthScore == null || score.currencyStrengthScore === undefined)) return <span className="text-muted-foreground">N/A</span>;
     const val = key === 'fundamental' ? score.fundamentalScore : key === 'cot' ? score.cotScore : key === 'retail' ? score.retailSentimentScore : key === 'news' ? (score.newsSentimentScore ?? 5) : key === 'currency' ? score.currencyStrengthScore! : score.technicalScore;
     return val.toFixed(1);
+  };
+
+  const formatSetupBadge = (sig: string | null | undefined) => {
+    if (!sig || sig === 'NONE') return <span className="text-muted-foreground text-xs">—</span>;
+    const u = sig.toUpperCase();
+    if (u === 'STRONG_BUY') return <Badge className="bg-green-700 hover:bg-green-700 text-white text-xs">STRONG BUY</Badge>;
+    if (u === 'BUY') return <Badge className="bg-green-600/90 hover:bg-green-600/90 text-white text-xs">BUY</Badge>;
+    if (u === 'STRONG_SELL') return <Badge variant="destructive" className="text-xs">STRONG SELL</Badge>;
+    if (u === 'SELL') return <Badge className="bg-red-600/90 hover:bg-red-600/90 text-white text-xs">SELL</Badge>;
+    if (u === 'WATCH') return <Badge variant="outline" className="text-amber-700 border-amber-600 text-xs">WATCH</Badge>;
+    return <span className="text-xs text-muted-foreground">{sig}</span>;
   };
 
   if (loading) {
@@ -210,6 +223,7 @@ export default function TrailBlazerScanner() {
                     Score {sortBy === 'score' && '▼'}
                   </th>
                   <th className="text-center p-2">Bias</th>
+                  <th className="text-center p-2" title="Yahoo box breakout + scanner alignment">Setup</th>
                   <th className="text-center p-2">Fundamental</th>
                   <th className="text-center p-2">COT</th>
                   <th className="text-center p-2">Retail</th>
@@ -243,6 +257,7 @@ export default function TrailBlazerScanner() {
                     <td className="p-2 text-center">
                       <Badge variant={getBiasVariant(s.bias)}>{s.bias}</Badge>
                     </td>
+                    <td className="p-2 text-center">{formatSetupBadge(s.tradeSetupSignal)}</td>
                     <td className="p-2 text-center">{formatScoreCell(s, 'fundamental')}</td>
                     <td className="p-2 text-center">{formatScoreCell(s, 'cot')}</td>
                     <td className="p-2 text-center">{formatScoreCell(s, 'retail')}</td>
@@ -337,10 +352,16 @@ export default function TrailBlazerScanner() {
                   <ScoreBar label="Fundamental" value={hasDataSource(selectedInstrument.dataSources, 'FRED') ? selectedInstrument.fundamentalScore : undefined} />
                   <ScoreBar label="Institutional COT" value={hasDataSource(selectedInstrument.dataSources, 'CFTC') ? selectedInstrument.cotScore : undefined} />
                   <ScoreBar label="Retail Sentiment" value={(hasDataSource(selectedInstrument.dataSources, 'myfxbook') || hasDataSource(selectedInstrument.dataSources, 'load-myfxbook')) ? selectedInstrument.retailSentimentScore : undefined} />
-                  <ScoreBar label="News Sentiment" value={hasDataSource(selectedInstrument.dataSources, 'Brave/Finnhub') ? (selectedInstrument.newsSentimentScore ?? 5) : undefined} />
+                  <ScoreBar label="News Sentiment" value={(hasDataSource(selectedInstrument.dataSources, 'Yahoo/Finnhub/Brave') || hasDataSource(selectedInstrument.dataSources, 'Brave/Finnhub')) ? (selectedInstrument.newsSentimentScore ?? 5) : undefined} />
                   <ScoreBar label="Currency Strength" value={hasDataSource(selectedInstrument.dataSources, 'CurrencyStrength') && selectedInstrument.currencyStrengthScore != null ? selectedInstrument.currencyStrengthScore : undefined} />
-                  <ScoreBar label="Technical" value={(hasDataSource(selectedInstrument.dataSources, 'TwelveData') || hasDataSource(selectedInstrument.dataSources, 'MarketStack') || hasDataSource(selectedInstrument.dataSources, 'iTick') || hasDataSource(selectedInstrument.dataSources, 'EODHD') || hasDataSource(selectedInstrument.dataSources, 'FMP') || hasDataSource(selectedInstrument.dataSources, 'NasdaqDataLink')) ? selectedInstrument.technicalScore : undefined} />
+                  <ScoreBar label="Technical" value={(hasDataSource(selectedInstrument.dataSources, 'YahooFinance') || hasDataSource(selectedInstrument.dataSources, 'TwelveData') || hasDataSource(selectedInstrument.dataSources, 'MarketStack') || hasDataSource(selectedInstrument.dataSources, 'iTick') || hasDataSource(selectedInstrument.dataSources, 'EODHD') || hasDataSource(selectedInstrument.dataSources, 'FMP') || hasDataSource(selectedInstrument.dataSources, 'NasdaqDataLink')) ? selectedInstrument.technicalScore : undefined} />
                 </div>
+                {(selectedInstrument.tradeSetupSignal && selectedInstrument.tradeSetupSignal !== 'NONE') && (
+                  <div className={`mt-4 rounded-lg border p-3 text-sm ${selectedInstrument.tradeSetupSignal.includes('SELL') ? 'border-red-500/50 bg-red-500/5' : selectedInstrument.tradeSetupSignal.includes('BUY') ? 'border-green-600/50 bg-green-600/5' : 'border-amber-500/50 bg-amber-500/5'}`}>
+                    <div className="font-semibold mb-1 flex items-center gap-2">Box breakout + scanner {formatSetupBadge(selectedInstrument.tradeSetupSignal)}</div>
+                    <p className="text-muted-foreground leading-snug">{selectedInstrument.tradeSetupDetail ?? ''}</p>
+                  </div>
+                )}
               </CardContent>
             </Card>
           </div>

@@ -414,8 +414,8 @@ class ApiService {
     return response.data;
   }
 
-  /** Manual refresh. useBrave=true (default) forces Brave for currency strength so it runs on demand; 24h cooldown is set after refresh. */
-  async refreshTrailBlazer(useBrave = true) {
+  /** Manual refresh. useBrave=true forces Brave for currency strength on demand; default false saves API tokens. Cooldown: TrailBlazer:BraveCooldownHours. */
+  async refreshTrailBlazer(useBrave = false) {
     const response = await this.client.post(`/TrailBlazer/refresh?useBrave=${useBrave}`);
     return response.data;
   }

@@ -162,6 +162,9 @@ export interface TrailBlazerScore {
   currencyStrengthScore?: number;
   dataSources?: string | null;
   dateComputed: string;
+  /** Box breakout + scanner: NONE, WATCH, BUY, STRONG_BUY, SELL, STRONG_SELL */
+  tradeSetupSignal?: string | null;
+  tradeSetupDetail?: string | null;
 }
 
 export interface TrailBlazerTopSetups {
