@@ -13,7 +13,9 @@ namespace TradeHelper.Services
             double overallScore,
             string bias,
             int boxLookback = 20,
-            double maxRangePctOfMid = 4.0)
+            double maxRangePctOfMid = 4.0,
+            double? transcriptSentiment = null,
+            bool transcriptMentionsSymbol = false)
         {
             if (barsNewestFirst == null || barsNewestFirst.Count < boxLookback + 3)
                 return ("NONE", "Insufficient price history for box setup.");
@@ -56,19 +58,19 @@ namespace TradeHelper.Services
             {
                 var line = $"Bullish breakout above {boxLookback}d box (H={boxHigh:F4}, close={close:F4}). Scanner: {overallScore:F1}/10, {bias}.";
                 if (overallScore >= 6.5 && !biasBear)
-                    return ("STRONG_BUY", line);
+                    return TraderNickSetupAdjuster.Apply("STRONG_BUY", line, true, false, transcriptSentiment, transcriptMentionsSymbol);
                 if (overallScore >= 5.5 || biasBull)
-                    return ("BUY", line);
-                return ("WATCH", line + " (Breakout vs weaker scanner — confirm).");
+                    return TraderNickSetupAdjuster.Apply("BUY", line, true, false, transcriptSentiment, transcriptMentionsSymbol);
+                return TraderNickSetupAdjuster.Apply("WATCH", line + " (Breakout vs weaker scanner — confirm).", true, false, transcriptSentiment, transcriptMentionsSymbol);
             }
 
             {
                 var line = $"Bearish breakdown below {boxLookback}d box (L={boxLow:F4}, close={close:F4}). Scanner: {overallScore:F1}/10, {bias}.";
                 if (overallScore <= 3.5 && !biasBull)
-                    return ("STRONG_SELL", line);
+                    return TraderNickSetupAdjuster.Apply("STRONG_SELL", line, false, true, transcriptSentiment, transcriptMentionsSymbol);
                 if (overallScore <= 4.5 || biasBear)
-                    return ("SELL", line);
-                return ("WATCH", line + " (Breakdown vs stronger scanner — confirm).");
+                    return TraderNickSetupAdjuster.Apply("SELL", line, false, true, transcriptSentiment, transcriptMentionsSymbol);
+                return TraderNickSetupAdjuster.Apply("WATCH", line + " (Breakdown vs stronger scanner — confirm).", false, true, transcriptSentiment, transcriptMentionsSymbol);
             }
         }
     }

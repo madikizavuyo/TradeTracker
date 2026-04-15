@@ -23,7 +23,8 @@ function formatHeatmapCell(indicator: string, entry: HeatmapEntry) {
   if (indicator === 'GDP' || indicator === 'CPI' || indicator === 'PCE') return `${v.toFixed(1)}%`;
   if (indicator === 'Treasury10Y') return `${v.toFixed(2)}%`;
   if (indicator === 'JOLTs') return `${(v / 1000).toFixed(1)}M`;
-  if (indicator === 'JoblessClaims') return `${Math.round(v)}K`;
+  // ICSA: weekly initial claims as a level (e.g. 219000 persons), not thousands
+  if (indicator === 'JoblessClaims') return `${(v / 1000).toFixed(0)}K`;
   if (indicator === 'DollarIndex') return v.toFixed(1);
   return v.toFixed(1);
 }

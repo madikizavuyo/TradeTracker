@@ -37,6 +37,7 @@ namespace TradeHelper.Services
         private readonly FmpService? _fmpService;
         private readonly NasdaqDataLinkService? _nasdaqDataLinkService;
         private readonly YahooFinanceService? _yahooFinanceService;
+        private readonly GoogleNewsService? _googleNewsService;
         private readonly IMemoryCache? _cache;
         private readonly IServiceScopeFactory _scopeFactory;
         private readonly ApiRateLimitService _rateLimit;
@@ -52,7 +53,7 @@ namespace TradeHelper.Services
         private int BraveCooldownHours => _config.GetValue("TrailBlazer:BraveCooldownHours", 48);
         private int BraveOutlookCacheMinutes => _config.GetValue("TrailBlazer:BraveOutlookCacheMinutes", 2880);
 
-        public TrailBlazerDataService(HttpClient client, IConfiguration config, ILogger<TrailBlazerDataService> logger, IServiceScopeFactory scopeFactory, ApiRateLimitService rateLimit, TwelveDataService? twelveDataService = null, MarketStackService? marketStackService = null, iTickService? iTickService = null, EodhdService? eodhdService = null, FmpService? fmpService = null, NasdaqDataLinkService? nasdaqDataLinkService = null, YahooFinanceService? yahooFinanceService = null, IMemoryCache? cache = null)
+        public TrailBlazerDataService(HttpClient client, IConfiguration config, ILogger<TrailBlazerDataService> logger, IServiceScopeFactory scopeFactory, ApiRateLimitService rateLimit, TwelveDataService? twelveDataService = null, MarketStackService? marketStackService = null, iTickService? iTickService = null, EodhdService? eodhdService = null, FmpService? fmpService = null, NasdaqDataLinkService? nasdaqDataLinkService = null, YahooFinanceService? yahooFinanceService = null, GoogleNewsService? googleNewsService = null, IMemoryCache? cache = null)
         {
             _client = client;
             _config = config;
@@ -66,11 +67,59 @@ namespace TradeHelper.Services
             _fmpService = fmpService;
             _nasdaqDataLinkService = nasdaqDataLinkService;
             _yahooFinanceService = yahooFinanceService;
+            _googleNewsService = googleNewsService;
             _cache = cache;
             _client.Timeout = TimeSpan.FromSeconds(30);
         }
 
         // ────── FRED Economic Data ──────
+
+        private string BuildFredObservationsUrl(string seriesId, int limit) =>
+            "https://api.stlouisfed.org/fred/series/observations?series_id=" +
+            Uri.EscapeDataString(seriesId) +
+            "&api_key=" + Uri.EscapeDataString(FredApiKey) +
+            "&file_type=json&sort_order=desc&limit=" + limit;
+
+        /// <summary>GET /fred/series/observations JSON, or null on HTTP failure (FRED error body logged).</summary>
+        /// <remarks>Retries on transient FRED/server errors (429, 5xx). Uses GetAsync (never throws on 4xx/5xx).</remarks>
+        private async Task<string?> FetchFredObservationsBodyAsync(string seriesId, int limit)
+        {
+            if (string.IsNullOrEmpty(FredApiKey)) return null;
+            const int maxAttempts = 3;
+            for (var attempt = 1; attempt <= maxAttempts; attempt++)
+            {
+                var url = BuildFredObservationsUrl(seriesId, limit);
+                using var resp = await _client.GetAsync(url);
+                var json = await resp.Content.ReadAsStringAsync();
+                if (resp.IsSuccessStatusCode) return json;
+
+                var status = (int)resp.StatusCode;
+                if (attempt < maxAttempts && (status == 429 || status is >= 500 and <= 599))
+                {
+                    await Task.Delay(TimeSpan.FromMilliseconds(300 * attempt + Random.Shared.Next(50, 200)));
+                    continue;
+                }
+
+                var detail = json;
+                try
+                {
+                    using var errDoc = JsonDocument.Parse(json);
+                    if (errDoc.RootElement.TryGetProperty("error_message", out var em))
+                        detail = em.GetString() ?? json;
+                }
+                catch { /* keep raw body */ }
+
+                if (detail.Length > 400) detail = detail[..400] + "…";
+                // 400 = unknown/invalid series or API constraint — avoid Warning spam in DB logs
+                if (status == 400)
+                    _logger.LogInformation("FRED HTTP 400 for {SeriesId}: {Detail}", seriesId, detail);
+                else
+                    _logger.LogWarning("FRED HTTP {Status} for {SeriesId}: {Detail}", status, seriesId, detail);
+                return null;
+            }
+
+            return null;
+        }
 
         public async Task<double> FetchFredDataAsync(string seriesId)
         {
@@ -78,8 +127,8 @@ namespace TradeHelper.Services
             if (await _rateLimit.IsBlockedAsync("FRED")) return 0;
             try
             {
-                var url = $"https://api.stlouisfed.org/fred/series/observations?series_id={seriesId}&api_key={FredApiKey}&file_type=json&sort_order=desc&limit=1";
-                var json = await _client.GetStringAsync(url);
+                var json = await FetchFredObservationsBodyAsync(seriesId, 1);
+                if (json == null) return 0;
                 var doc = JsonDocument.Parse(json);
                 if (doc.RootElement.TryGetProperty("error_message", out var errMsg))
                 {
@@ -97,7 +146,7 @@ namespace TradeHelper.Services
             }
             catch (Exception ex)
             {
-                _logger.LogWarning(ex, "FRED fetch failed for {SeriesId}", seriesId);
+                _logger.LogDebug(ex, "FRED parse/unexpected error for {SeriesId}", seriesId);
             }
             return 0;
         }
@@ -109,8 +158,8 @@ namespace TradeHelper.Services
             if (await _rateLimit.IsBlockedAsync("FRED")) return null;
             try
             {
-                var url = $"https://api.stlouisfed.org/fred/series/observations?series_id={seriesId}&api_key={FredApiKey}&file_type=json&sort_order=desc&limit={observationCount}";
-                var json = await _client.GetStringAsync(url);
+                var json = await FetchFredObservationsBodyAsync(seriesId, observationCount);
+                if (json == null) return null;
                 var doc = JsonDocument.Parse(json);
                 if (doc.RootElement.TryGetProperty("error_message", out var errMsg))
                 {
@@ -133,7 +182,7 @@ namespace TradeHelper.Services
             }
             catch (Exception ex)
             {
-                _logger.LogWarning(ex, "FRED YoY fetch failed for {SeriesId}", seriesId);
+                _logger.LogDebug(ex, "FRED YoY parse/unexpected error for {SeriesId}", seriesId);
                 return null;
             }
         }
@@ -148,8 +197,8 @@ namespace TradeHelper.Services
             if (await _rateLimit.IsBlockedAsync("FRED")) return null;
             try
             {
-                var url = $"https://api.stlouisfed.org/fred/series/observations?series_id={seriesId}&api_key={FredApiKey}&file_type=json&sort_order=desc&limit={fetchLimit}";
-                var json = await _client.GetStringAsync(url);
+                var json = await FetchFredObservationsBodyAsync(seriesId, fetchLimit);
+                if (json == null) return null;
                 using var doc = JsonDocument.Parse(json);
                 if (doc.RootElement.TryGetProperty("error_message", out var errMsg))
                 {
@@ -555,22 +604,52 @@ namespace TradeHelper.Services
             return batch.TryGetValue(symbol, out var r) ? r : null;
         }
 
-        // ────── News (Yahoo first — no API key; Finnhub; Brave last) ──────
+        // ────── News (Google News RSS first — free; Yahoo; Finnhub; Brave last) ──────
+
+        private static void MergeNewsDedupe(List<NewsItem> target, IEnumerable<NewsItem> incoming)
+        {
+            var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            foreach (var x in target)
+            {
+                var h = (x.Headline ?? "").Trim();
+                if (h.Length > 0) seen.Add(h.Length > 96 ? h[..96] : h);
+            }
+            foreach (var n in incoming)
+            {
+                var h = (n.Headline ?? "").Trim();
+                if (h.Length == 0) continue;
+                var key = h.Length > 96 ? h[..96] : h;
+                if (seen.Add(key)) target.Add(n);
+            }
+        }
 
         public async Task<List<NewsItem>> FetchNewsForSymbolAsync(string symbol, string? assetClass)
         {
             var items = new List<NewsItem>();
 
+            if (_googleNewsService != null)
+            {
+                try
+                {
+                    var gn = await _googleNewsService.FetchNewsAsync(symbol, assetClass);
+                    MergeNewsDedupe(items, gn);
+                    if (items.Count > 0)
+                        _logger.LogDebug("News for {Symbol}: {Count} items from Google News RSS", symbol, items.Count);
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogDebug(ex, "Google News failed for {Symbol}, continuing", symbol);
+                }
+            }
+
             if (_yahooFinanceService != null)
             {
                 try
                 {
-                    items = await _yahooFinanceService.FetchNewsForInstrumentAsync(symbol, assetClass);
-                    if (items.Count > 0)
-                    {
-                        _logger.LogDebug("News for {Symbol}: {Count} items from Yahoo Finance", symbol, items.Count);
-                        return items;
-                    }
+                    var yh = await _yahooFinanceService.FetchNewsForInstrumentAsync(symbol, assetClass);
+                    MergeNewsDedupe(items, yh);
+                    if (yh.Count > 0)
+                        _logger.LogDebug("News for {Symbol}: merged Yahoo ({Count} new items in batch)", symbol, yh.Count);
                 }
                 catch (Exception ex)
                 {
@@ -578,7 +657,10 @@ namespace TradeHelper.Services
                 }
             }
 
-            // Finnhub (free) when Yahoo empty
+            if (items.Count > 0)
+                return items;
+
+            // Finnhub (free) when Google+Yahoo produced nothing
             if (!string.IsNullOrEmpty(FinnhubApiKey) && !await _rateLimit.IsBlockedAsync("Finnhub"))
             {
                 var category = (assetClass ?? "").StartsWith("Forex", StringComparison.OrdinalIgnoreCase) ? "forex" : "general";
@@ -757,7 +839,7 @@ namespace TradeHelper.Services
             if (news == null || news.Count == 0)
                 return (5.0, false);
 
-            var score = ComputeNewsSentimentFromHeadlines(news.Select(n => n.Headline + " " + n.Summary).Where(s => !string.IsNullOrWhiteSpace(s)).ToList());
+            var score = NewsSentimentHelper.ComputeFromTexts(news.Select(n => n.Headline + " " + n.Summary).Where(s => !string.IsNullOrWhiteSpace(s)).ToList());
             return (score, true);
         }
 
@@ -775,7 +857,7 @@ namespace TradeHelper.Services
                     .ToListAsync();
                 if (fromDb.Count > 0)
                 {
-                    var score = ComputeNewsSentimentFromHeadlines(fromDb.Select(a => a.Headline + " " + a.Summary).Where(s => !string.IsNullOrWhiteSpace(s)).ToList());
+                    var score = NewsSentimentHelper.ComputeFromTexts(fromDb.Select(a => a.Headline + " " + a.Summary).Where(s => !string.IsNullOrWhiteSpace(s)).ToList());
                     _logger.LogDebug("News for {Symbol}: using {Count} articles from DB (collected within {Hours}h, skipping Brave/Finnhub)", symbol, fromDb.Count, newsReuseHours);
                     return (score, true, new List<NewsItem>()); // Empty items = already in DB, don't re-persist
                 }
@@ -785,42 +867,8 @@ namespace TradeHelper.Services
             if (news == null || news.Count == 0)
                 return (5.0, false, new List<NewsItem>());
 
-            var computedScore = ComputeNewsSentimentFromHeadlines(news.Select(n => n.Headline + " " + n.Summary).Where(s => !string.IsNullOrWhiteSpace(s)).ToList());
+            var computedScore = NewsSentimentHelper.ComputeFromTexts(news.Select(n => n.Headline + " " + n.Summary).Where(s => !string.IsNullOrWhiteSpace(s)).ToList());
             return (computedScore, true, news);
-        }
-
-        private static double ComputeNewsSentimentFromHeadlines(IReadOnlyList<string> texts)
-        {
-            if (texts.Count == 0) return 5.0;
-
-            var positive = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
-            {
-                "rally", "surge", "strong", "gains", "bullish", "positive", "breakout", "rise", "soar", "jump", "climb",
-                "recovery", "rebound", "outperform", "upgrade", "optimistic", "growth", "record high", "all-time high"
-            };
-            var negative = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
-            {
-                "slump", "crash", "fall", "drop", "bearish", "negative", "recession", "tumble", "plunge", "decline",
-                "sell-off", "downgrade", "pessimistic", "weak", "loss", "record low", "collapse", "crisis"
-            };
-
-            double sum = 0;
-            int count = 0;
-            foreach (var text in texts)
-            {
-                var words = text.Split([' ', '.', ',', '!', '?', ':', ';', '-', '\'', '"'], StringSplitOptions.RemoveEmptyEntries);
-                var posCount = words.Count(w => positive.Contains(w));
-                var negCount = words.Count(w => negative.Contains(w));
-                var diff = posCount - negCount;
-                if (diff != 0 || posCount + negCount > 0)
-                {
-                    sum += Math.Clamp(5.0 + diff * 1.5, 1.0, 10.0);
-                    count++;
-                }
-            }
-
-            if (count == 0) return 5.0;
-            return Math.Clamp(sum / count, 1.0, 10.0);
         }
 
         /// <summary>Brave Web Search - returns title, url, description for each result. Rate-limited and cacheable.</summary>
@@ -1344,8 +1392,8 @@ namespace TradeHelper.Services
             return new List<double>();
         }
 
-        /// <summary>Box breakout + scanner fusion (Yahoo OHLC). Mutates score.</summary>
-        public async Task ApplyBoxBreakoutTradeSetupAsync(TrailBlazerScore score, string instrumentName)
+        /// <summary>Box breakout + scanner fusion (Yahoo OHLC). Mutates score. Optional TraderNick transcript nudges STRONG signals when aligned.</summary>
+        public async Task ApplyBoxBreakoutTradeSetupAsync(TrailBlazerScore score, string instrumentName, TraderNickInsight? traderNick = null)
         {
             score.TradeSetupSignal = "NONE";
             score.TradeSetupDetail = null;
@@ -1353,14 +1401,32 @@ namespace TradeHelper.Services
                 return;
             try
             {
-                var bars = await _yahooFinanceService.FetchDailyOhlcAsync(instrumentName, 100);
+                var bars = await _yahooFinanceService.FetchDailyOhlcAsync(instrumentName, 120);
                 if (bars == null || bars.Count < 25)
                     return;
                 var lookback = _config.GetValue("TrailBlazer:BoxBreakoutLookback", 20);
                 var maxRangePct = _config.GetValue("TrailBlazer:BoxBreakoutMaxRangePct", 4.0);
-                var (sig, det) = BoxBreakoutSetupAnalyzer.Analyze(bars, score.OverallScore, score.Bias ?? "Neutral", lookback, maxRangePct);
-                score.TradeSetupSignal = sig;
-                score.TradeSetupDetail = det != null && det.Length > 500 ? det[..500] : det;
+                var mention = traderNick?.MentionsSymbol(instrumentName, null) == true;
+                var ts = traderNick?.HasData == true ? (double?)traderNick.SentimentScore : null;
+                var (boxSig, boxDet) = BoxBreakoutSetupAnalyzer.Analyze(bars, score.OverallScore, score.Bias ?? "Neutral", lookback, maxRangePct, ts, mention);
+                var finalSig = boxSig;
+                var finalDet = boxDet;
+                if (_config.GetValue("TrailBlazer:PullbackReversalEnabled", true) && bars.Count >= 55)
+                {
+                    var phS = _config.GetValue("TrailBlazer:ReversalPriorHighStart", 10);
+                    var phE = _config.GetValue("TrailBlazer:ReversalPriorHighEnd", 50);
+                    var rlS = _config.GetValue("TrailBlazer:ReversalRecentLowStart", 1);
+                    var rlE = _config.GetValue("TrailBlazer:ReversalRecentLowEnd", 14);
+                    var minDd = _config.GetValue("TrailBlazer:ReversalMinDrawdownPct", 4.0);
+                    var minRc = _config.GetValue("TrailBlazer:ReversalMinReclaimFromLowPct", 1.0);
+                    var strDd = _config.GetValue("TrailBlazer:ReversalStrongDrawdownPct", 6.5);
+                    var (revSig, revDet) = PullbackReversalSetupAnalyzer.Analyze(
+                        bars, score.OverallScore, score.Bias ?? "Neutral",
+                        phS, phE, rlS, rlE, minDd, minRc, strDd);
+                    (finalSig, finalDet) = TradeSetupMergeHelper.MergeBoxAndPullbackReversal(boxSig, boxDet ?? "", revSig, revDet ?? "");
+                }
+                score.TradeSetupSignal = finalSig;
+                score.TradeSetupDetail = finalDet != null && finalDet.Length > 500 ? finalDet[..500] : finalDet;
             }
             catch (Exception ex)
             {
@@ -2203,13 +2269,14 @@ namespace TradeHelper.Services
             {
                 ["USD"] = new() { ["GDP"] = "GDPC1", ["CPI"] = "CPIAUCSL", ["Unemployment"] = "UNRATE", ["InterestRate"] = "FEDFUNDS", ["PMI"] = "BSCICP03USM665S", ["Treasury10Y"] = "DGS10", ["DollarIndex"] = "DTWEXBGS", ["PCE"] = "PCEPI", ["JOLTs"] = "JTSJOL", ["JoblessClaims"] = "ICSA" },
                 ["EUR"] = new() { ["GDP"] = "EUNNGDP", ["CPI"] = "CP0000EZ19M086NEST", ["Unemployment"] = "LRHUTTTTEZM156S", ["InterestRate"] = "ECBDFR", ["PMI"] = "BSCICP03EZM665S" },
-                ["GBP"] = new() { ["GDP"] = "CLVMNACSCAB1GQGBM", ["CPI"] = "GBRCPIALLMINMEI", ["Unemployment"] = "LRHUTTTTGBM156S", ["InterestRate"] = "BOERUKM", ["PMI"] = "BSCICP03GBM665S" },
+                ["GBP"] = new() { ["GDP"] = "NAEXKP01GBQ661S", ["CPI"] = "GBRCPIALLMINMEI", ["Unemployment"] = "LRHUTTTTGBM156S", ["InterestRate"] = "BOERUKM", ["PMI"] = "BSCICP03GBM665S" },
                 ["JPY"] = new() { ["GDP"] = "JPNRGDPEXP", ["CPI"] = "JPNCPIALLMINMEI", ["Unemployment"] = "LRHUTTTTJPM156S", ["InterestRate"] = "IRSTCB01JPM156N", ["PMI"] = "BSCICP03JPM665S" },
                 ["AUD"] = new() { ["GDP"] = "AUSGDPNQDSMEI", ["CPI"] = "AUSCPIALLQINMEI", ["Unemployment"] = "LRHUTTTTAUM156S", ["InterestRate"] = "IRSTCI01AUM156N", ["PMI"] = "BSCICP03AUM665S" },
                 ["NZD"] = new() { ["GDP"] = "NZLGDPNQDSMEI", ["CPI"] = "NZLCPIALLQINMEI", ["Unemployment"] = "LRHUTTTTNZA156N", ["InterestRate"] = "IRSTCI01NZM156N", ["PMI"] = "BSCICP03NZM665S" },
-                ["CAD"] = new() { ["GDP"] = "CLVMNACSCAB1GQCA", ["CPI"] = "CANCPIALLMINMEI", ["Unemployment"] = "LRHUTTTTCAM156S", ["InterestRate"] = "IRSTCB01CAM156N", ["PMI"] = "BSCICP03CAM665S" },
+                // Canada: no BSCICP03 composite on FRED — OECD CLI business situation (normalised) as PMI proxy
+                ["CAD"] = new() { ["GDP"] = "NAEXKP01CAQ189S", ["CPI"] = "CANCPIALLMINMEI", ["Unemployment"] = "LRHUTTTTCAM156S", ["InterestRate"] = "IRSTCB01CAM156N", ["PMI"] = "CANLOCOBSNOSTSAM" },
                 ["CHF"] = new() { ["GDP"] = "CLVMNACSCAB1GQCH", ["CPI"] = "CHECPIALLMINMEI", ["Unemployment"] = "LRHUTTTTCHQ156S", ["InterestRate"] = "IRSTCI01CHM156N", ["PMI"] = "BSCICP03CHM665S" },
-                ["SEK"] = new() { ["GDP"] = "CLVMNACSCAB1GQSE", ["CPI"] = "CP0000SEM086NEST", ["Unemployment"] = "LRHUTTTTSEM156S", ["InterestRate"] = "IRSTCB01SEM156N", ["PMI"] = "BSCICP03SEM665S" },
+                ["SEK"] = new() { ["GDP"] = "CLVMNACSCAB1GQSE", ["CPI"] = "CP0000SEM086NEST", ["Unemployment"] = "LRHUTTTTSEM156S", ["InterestRate"] = "IRSTCI01SEM156N", ["PMI"] = "BSCICP03SEM665S" },
                 ["ZAR"] = new() { ["GDP"] = "ZAFGDPRQPSMEI", ["CPI"] = "ZAFCPIALLMINMEI", ["Unemployment"] = "LRUN64TTZAQ156S", ["InterestRate"] = "IRSTCB01ZAM156N", ["PMI"] = "BSCICP03ZAM665S" },
                 ["CNY"] = new() { ["GDP"] = "CHNGDPRAPSMEI", ["CPI"] = "CHNCPIALLMINMEI", ["Unemployment"] = "SLUEM1524ZSCHN", ["InterestRate"] = "IRSTCB01CNM156N", ["PMI"] = "BSCICP03CNM665S" }
             };
@@ -2218,8 +2285,7 @@ namespace TradeHelper.Services
             var cpiQuarterlySeries = new HashSet<string>(StringComparer.OrdinalIgnoreCase) { "AUSCPIALLQINMEI", "NZLCPIALLQINMEI" };
             // GDP series that are already YoY growth rates (use raw fetch, not YoY calc)
             var gdpIsGrowthRate = new HashSet<string>(StringComparer.OrdinalIgnoreCase) { "ZAFGDPRQPSMEI", "CHNGDPRAPSMEI" };
-            // CPI series that are already YoY % (OECD MEI annual growth) — do not re-apply YoY
-            var cpiIsGrowthRate = new HashSet<string>(StringComparer.OrdinalIgnoreCase) { "CP0000EZ19M086NEST", "CP0000SEM086NEST" };
+            // CPI/PCE: YoY from index (incl. Euro area CP0000EZ19M086NEST & Sweden CP0000SEM086NEST — HICP 2015=100, not raw %)
             // PMI uses OECD Business Confidence: 100=neutral (not 50 like ISM PMI)
             const double PmiNeutral = 100.0;
 
@@ -2241,15 +2307,10 @@ namespace TradeHelper.Services
                     }
                     else if (indicator == "CPI" || indicator == "PCE")
                     {
-                        if (cpiIsGrowthRate.Contains(seriesId))
-                            value = await FetchFredDataAsync(seriesId);
-                        else
-                        {
-                            var obsCount = (indicator == "PCE" || cpiQuarterlySeries.Contains(seriesId)) ? 5 : 13;
-                            var cal = await FetchFredYoYPercentCalendarAsync(seriesId);
-                            var yoy = cal ?? await FetchFredYoYPercentAsync(seriesId, obsCount);
-                            value = yoy ?? 0;
-                        }
+                        var obsCount = (indicator == "PCE" || cpiQuarterlySeries.Contains(seriesId)) ? 5 : 13;
+                        var cal = await FetchFredYoYPercentCalendarAsync(seriesId);
+                        var yoy = cal ?? await FetchFredYoYPercentAsync(seriesId, obsCount);
+                        value = yoy ?? 0;
                     }
                     else
                     {

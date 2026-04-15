@@ -14,8 +14,11 @@ using TradeHelper.Models;
 using TradeHelper.Services;
 
 var builder = WebApplication.CreateBuilder(args);
-// Optional local overrides (real keys); file is gitignored — see SECRETS.md
-builder.Configuration.AddJsonFile("appsettings.Local.json", optional: true, reloadOnChange: true);
+// Optional local overrides (real keys); file is gitignored — see SECRETS.md.
+// IMPORTANT: load only in Development. If this file were loaded in Production, it would override
+// appsettings.Production.json (e.g. LocalDB connection string) and break login/API with HTTP 500.
+if (builder.Environment.IsDevelopment())
+    builder.Configuration.AddJsonFile("appsettings.Local.json", optional: true, reloadOnChange: true);
 
 // Database logging: persist ILogger output to ApplicationLogs table (enabled in Production for refresh failure diagnosis)
 builder.Services.AddSingleton<ILoggerProvider>(sp => new DbLoggerProvider(sp, sp.GetRequiredService<IConfiguration>()));
@@ -118,6 +121,8 @@ builder.Services.AddHttpClient<EodhdService>();
 builder.Services.AddHttpClient<FmpService>();
 builder.Services.AddHttpClient<NasdaqDataLinkService>();
 builder.Services.AddHttpClient<YahooFinanceService>();
+builder.Services.AddHttpClient<GoogleNewsService>();
+builder.Services.AddHttpClient<TranscriptApiService>();
 builder.Services.AddHttpClient<TrailBlazerDataService>()
     .AddTypedClient((http, sp) => new TrailBlazerDataService(
         http,
@@ -132,6 +137,7 @@ builder.Services.AddHttpClient<TrailBlazerDataService>()
         sp.GetService<FmpService>(),
         sp.GetService<NasdaqDataLinkService>(),
         sp.GetService<YahooFinanceService>(),
+        sp.GetService<GoogleNewsService>(),
         sp.GetService<IMemoryCache>()));
 builder.Services.AddHttpClient<OecdDataService>();
 builder.Services.AddHttpClient<WorldBankDataService>();

@@ -1,5 +1,17 @@
 # SmarterASP Deployment Troubleshooting
 
+## HTTP 500 on `POST /api/auth/login`
+
+**Typical cause:** The app was using a **local** SQL connection string on the server because **`appsettings.Local.json` was loaded in Production** and overrides `appsettings.Production.json`. Identity then fails against `(localdb)` or the wrong server → **500**.
+
+**Fix (code):** `Program.cs` only loads `appsettings.Local.json` in Development, and the project excludes that file from publish output.
+
+**Fix (server):** Redeploy after pulling the fix. Optionally delete `site1/appsettings.Local.json` via FTP if it was uploaded earlier.
+
+**Other causes:** Wrong SQL password in `appsettings.Production.json`, database unreachable, or missing `Jwt:Key` when issuing the token (would also log as an error).
+
+---
+
 ## HTTP 500.19 – Config section locked (0x80070021)
 
 **Error:** "This configuration section cannot be used at this path" on `<authentication>`.

@@ -133,6 +133,22 @@ namespace TradeHelper.Services
                 var currencyOverrides = await LoadCurrencyOverridesAsync(db);
                 var currencyStrength = await LoadCombinedCurrencyStrengthAsync(db, heatmapEntries, newsCacheHours);
 
+                TraderNickInsight? traderNickInsight = null;
+                try
+                {
+                    var transcriptApi = scope.ServiceProvider.GetService<TranscriptApiService>();
+                    if (transcriptApi != null)
+                    {
+                        traderNickInsight = await transcriptApi.GetInsightAsync(CancellationToken.None);
+                        if (traderNickInsight?.HasData == true)
+                            _logger.LogInformation("TraderNick: transcript loaded — {Title} (sentiment {Score:F1}/10)", traderNickInsight.VideoTitle ?? "(no title)", traderNickInsight.SentimentScore);
+                    }
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogWarning(ex, "TraderNick transcript fetch skipped");
+                }
+
                 _progress.SetRunning("instruments", "Processing instruments...", 0, instruments.Count);
                 var idx = 0;
                 var statsRetail = 0;
@@ -144,7 +160,7 @@ namespace TradeHelper.Services
                 {
                     try
                     {
-                        var (hasRetail, hasCOT, hasTech, hasNews) = await ProcessInstrumentAsync(db, dataService, scoringEngine, instrument, heatmapEntries, cotBatch, myFxBookSentiment, currencyOverrides, currencyStrength, _breakoutNotifier, _logger);
+                        var (hasRetail, hasCOT, hasTech, hasNews) = await ProcessInstrumentAsync(db, dataService, scoringEngine, instrument, heatmapEntries, cotBatch, myFxBookSentiment, currencyOverrides, currencyStrength, _breakoutNotifier, traderNickInsight, _logger);
                         if (hasRetail) statsRetail++;
                         else statsNoRetail++;
                         if (hasCOT) statsCOT++;
@@ -297,7 +313,9 @@ namespace TradeHelper.Services
         private static bool NewsDataSourceInScore(string? dataSources)
         {
             if (string.IsNullOrEmpty(dataSources)) return false;
-            return dataSources.Contains("Yahoo/Finnhub/Brave", StringComparison.OrdinalIgnoreCase)
+            return dataSources.Contains("GoogleNews", StringComparison.OrdinalIgnoreCase)
+                   || dataSources.Contains("TraderNickTranscript", StringComparison.OrdinalIgnoreCase)
+                   || dataSources.Contains("Yahoo/Finnhub/Brave", StringComparison.OrdinalIgnoreCase)
                    || dataSources.Contains("Brave/Finnhub", StringComparison.OrdinalIgnoreCase);
         }
 
@@ -312,6 +330,7 @@ namespace TradeHelper.Services
             IReadOnlyDictionary<string, double> currencyOverrides,
             IReadOnlyDictionary<string, double> currencyStrength,
             IBreakoutSignalNotifier? breakoutNotifier,
+            TraderNickInsight? traderNickInsight,
             ILogger logger)
         {
             var dataSources = new List<string>();
@@ -409,8 +428,15 @@ namespace TradeHelper.Services
 
             var (newsSentimentScore, hasNewsSentiment, newsItems) = await dataService.FetchNewsSentimentScoreWithItemsAsync(instrument.Name, instrument.AssetClass, db);
             var effectiveNewsScore = newsSentimentScore;
+            if (traderNickInsight?.HasData == true)
+            {
+                var w = traderNickInsight.MentionsSymbol(instrument.Name, instrument.AssetClass) ? 0.42 : 0.18;
+                effectiveNewsScore = Math.Clamp((1.0 - w) * effectiveNewsScore + w * traderNickInsight.SentimentScore, 1.0, 10.0);
+            }
             if (hasNewsSentiment)
             {
+                // Canonical tags (must match TrailBlazerScanner hasDataSource exact keys; not one slash-long string)
+                dataSources.Add("GoogleNews");
                 dataSources.Add("Yahoo/Finnhub/Brave");
                 if (newsItems.Count > 0)
                 {
@@ -440,12 +466,16 @@ namespace TradeHelper.Services
                 if (latestScore != null && NewsDataSourceInScore(latestScore.DataSources))
                 {
                     effectiveNewsScore = latestScore.NewsSentimentScore;
+                    dataSources.Add("GoogleNews");
                     dataSources.Add("Yahoo/Finnhub/Brave");
                 }
             }
 
+            if (traderNickInsight?.HasData == true && !dataSources.Contains("GoogleNews"))
+                dataSources.Add("TraderNickTranscript");
+
             var hasRetail = dataSources.Contains("myfxbook");
-            var hasNews = dataSources.Contains("Yahoo/Finnhub/Brave");
+            var hasNews = dataSources.Contains("GoogleNews") || dataSources.Contains("TraderNickTranscript");
             var hasCOT = cotReport != null || syntheticCOTScore.HasValue;
             var weightContext = new ScoringWeightContext(
                 instrument.AssetClass,
@@ -516,7 +546,7 @@ namespace TradeHelper.Services
                 logger.LogDebug("TrailBlazer: {Instrument} COT score preserved from prior ({Score:F1})", instrument.Name, score.COTScore);
             }
 
-            await dataService.ApplyBoxBreakoutTradeSetupAsync(score, instrument.Name);
+            await dataService.ApplyBoxBreakoutTradeSetupAsync(score, instrument.Name, traderNickInsight);
             if (breakoutNotifier != null)
                 await breakoutNotifier.TryNotifyStrongSignalAsync(score, instrument.Name);
 

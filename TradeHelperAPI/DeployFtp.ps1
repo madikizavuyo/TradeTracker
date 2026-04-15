@@ -1,5 +1,6 @@
 # FTP deploy to SmarterASP - overwrites files (no delete)
 # By default only uploads changed files (incremental). Use -ForceFull for full deploy.
+# Use -ModifiedWithinHours 4 to upload only files whose LastWriteTimeUtc is within the last N hours (ignores manifest).
 # IMPORTANT: Stop the site in SmarterASP Control Panel first to avoid 550 errors on locked files
 param(
     [string]$FtpHost = "win6053.site4now.net",
@@ -7,7 +8,9 @@ param(
     [string]$FtpPass,
     [string]$RemotePath = "/site1",
     [string]$SourcePath = "",
-    [switch]$ForceFull
+    [switch]$ForceFull,
+    [ValidateRange(0, 168)]
+    [int]$ModifiedWithinHours = 0
 )
 
 if (-not $FtpPass) {
@@ -81,16 +84,25 @@ if ($identityFiles.Count -gt 0) {
     Write-Host "Skipping $($identityFiles.Count) wwwroot/Identity files (locked when site runs). Stop site first for full deploy." -ForegroundColor Yellow
 }
 
+$timeFilterUtc = $null
+if ($ModifiedWithinHours -gt 0) {
+    $timeFilterUtc = [DateTime]::UtcNow.AddHours(-$ModifiedWithinHours)
+    $before = $files.Count
+    $files = @($files | Where-Object { $_.LastWriteTimeUtc -ge $timeFilterUtc })
+    Write-Host "Time filter (UTC): only files modified in the last $ModifiedWithinHours hour(s) (cutoff $($timeFilterUtc.ToString('o'))). Kept $($files.Count) of $before." -ForegroundColor Cyan
+}
+
 # Incremental deploy: only upload changed files (compare size + LastWriteTimeUtc)
 $manifestPath = Join-Path $PSScriptRoot ".deploy-manifest.json"
 $manifest = @{}
-if (-not $ForceFull -and (Test-Path $manifestPath)) {
+if (-not $ForceFull -and $ModifiedWithinHours -eq 0 -and (Test-Path $manifestPath)) {
     try {
         $raw = Get-Content $manifestPath -Raw | ConvertFrom-Json
         $raw.PSObject.Properties | ForEach-Object { $manifest[$_.Name] = @{ size = $_.Value.size; modified = $_.Value.modified } }
     } catch { $manifest = @{} }
 }
 if ($ForceFull) { Write-Host "Force full deploy (all files)" -ForegroundColor Yellow
+} elseif ($ModifiedWithinHours -gt 0) { Write-Host "Recent-files deploy (no manifest skip)" -ForegroundColor Cyan
 } else { Write-Host "Incremental deploy (changed files only)" -ForegroundColor Cyan }
 
 $toUpload = @()
@@ -101,7 +113,9 @@ foreach ($f in $files) {
     $prev = $manifest[$key]
     $size = $f.Length
     $modified = $f.LastWriteTimeUtc.ToString("o")
-    if ($ForceFull -or -not $prev -or $prev.size -ne $size -or $prev.modified -ne $modified) {
+    if ($ModifiedWithinHours -gt 0) {
+        $toUpload += $f
+    } elseif ($ForceFull -or -not $prev -or $prev.size -ne $size -or $prev.modified -ne $modified) {
         $toUpload += $f
     }
 }
@@ -140,13 +154,15 @@ foreach ($f in $toUpload) {
     }
 }
 
-# Persist manifest for next incremental deploy (prune entries for deleted files)
-$keysToRemove = @()
-foreach ($k in $manifest.Keys) {
-    $localPath = Join-Path $SourcePath $k.Replace("/", [System.IO.Path]::DirectorySeparatorChar)
-    if (-not (Test-Path $localPath)) { $keysToRemove += $k }
+# Persist manifest for next incremental deploy (prune entries for deleted files). Skip update when only doing a time-window push.
+if ($ModifiedWithinHours -eq 0) {
+    $keysToRemove = @()
+    foreach ($k in $manifest.Keys) {
+        $localPath = Join-Path $SourcePath $k.Replace("/", [System.IO.Path]::DirectorySeparatorChar)
+        if (-not (Test-Path $localPath)) { $keysToRemove += $k }
+    }
+    foreach ($k in $keysToRemove) { $manifest.Remove($k) }
+    $manifest | ConvertTo-Json -Depth 3 | Set-Content $manifestPath -Encoding UTF8
 }
-foreach ($k in $keysToRemove) { $manifest.Remove($k) }
-$manifest | ConvertTo-Json -Depth 3 | Set-Content $manifestPath -Encoding UTF8
 
 Write-Host "`nUpload complete. Restart the site in SmarterASP Control Panel." -ForegroundColor Green

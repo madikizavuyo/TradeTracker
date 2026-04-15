@@ -19,50 +19,61 @@ namespace TradeHelper.Controllers
         private readonly IConfiguration _configuration;
         private readonly IWebHostEnvironment _env;
         private readonly TradeHelper.Services.LoginRateLimitService _loginRateLimit;
+        private readonly ILogger<AuthController> _logger;
 
-        public AuthController(UserManager<IdentityUser> userManager, SignInManager<IdentityUser> signInManager, IConfiguration configuration, IWebHostEnvironment env, TradeHelper.Services.LoginRateLimitService loginRateLimit)
+        public AuthController(UserManager<IdentityUser> userManager, SignInManager<IdentityUser> signInManager, IConfiguration configuration, IWebHostEnvironment env, TradeHelper.Services.LoginRateLimitService loginRateLimit, ILogger<AuthController> logger)
         {
             _userManager = userManager;
             _signInManager = signInManager;
             _configuration = configuration;
             _env = env;
             _loginRateLimit = loginRateLimit;
+            _logger = logger;
         }
 
         [HttpPost("login")]
+        [AllowAnonymous]
         public async Task<IActionResult> Login([FromBody] LoginRequest request)
         {
-            if (request == null || !ModelState.IsValid)
-                return BadRequest(ModelState);
-            var ip = HttpContext.Connection.RemoteIpAddress?.ToString() ?? "";
-            if (!_loginRateLimit.IsAllowed(ip))
-                return StatusCode(429, new { message = "Too many login attempts. Please try again later." });
-
-            var user = await _userManager.FindByEmailAsync(request.Email);
-            if (user == null)
+            try
             {
-                _loginRateLimit.RecordAttempt(ip);
-                return Unauthorized(new { message = "Invalid email or password." });
-            }
+                if (request == null || !ModelState.IsValid)
+                    return BadRequest(ModelState);
+                var ip = HttpContext.Connection.RemoteIpAddress?.ToString() ?? "";
+                if (!_loginRateLimit.IsAllowed(ip))
+                    return StatusCode(429, new { message = "Too many login attempts. Please try again later." });
 
-            var isValidPassword = await _userManager.CheckPasswordAsync(user, request.Password);
-            if (!isValidPassword)
+                var user = await _userManager.FindByEmailAsync(request.Email);
+                if (user == null)
+                {
+                    _loginRateLimit.RecordAttempt(ip);
+                    return Unauthorized(new { message = "Invalid email or password." });
+                }
+
+                var isValidPassword = await _userManager.CheckPasswordAsync(user, request.Password);
+                if (!isValidPassword)
+                {
+                    _loginRateLimit.RecordAttempt(ip);
+                    return Unauthorized(new { message = "Invalid email or password." });
+                }
+
+                _loginRateLimit.ClearAttempts(ip);
+                var roles = await _userManager.GetRolesAsync(user);
+                var token = GenerateJwtToken(user, roles);
+
+                return Ok(new
+                {
+                    message = "Login successful",
+                    email = user.Email,
+                    token = token,
+                    expiresIn = 3600 // 1 hour
+                });
+            }
+            catch (Exception ex)
             {
-                _loginRateLimit.RecordAttempt(ip);
-                return Unauthorized(new { message = "Invalid email or password." });
+                _logger.LogError(ex, "Login request failed");
+                return StatusCode(500, new { message = "A server error occurred. Please try again later." });
             }
-
-            _loginRateLimit.ClearAttempts(ip);
-            var roles = await _userManager.GetRolesAsync(user);
-            var token = GenerateJwtToken(user, roles);
-
-            return Ok(new 
-            { 
-                message = "Login successful", 
-                email = user.Email,
-                token = token,
-                expiresIn = 3600 // 1 hour
-            });
         }
 
         private string GenerateJwtToken(IdentityUser user, IList<string> roles)

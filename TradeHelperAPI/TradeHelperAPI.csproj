@@ -13,6 +13,11 @@
     <IsWebConfigTransformDisabled>true</IsWebConfigTransformDisabled>
   </PropertyGroup>
 
+  <!-- Never publish local secrets file (if present on disk) — would override production SQL/JWT on the server -->
+  <ItemGroup>
+    <Content Update="appsettings.Local.json" CopyToPublishDirectory="Never" />
+  </ItemGroup>
+
   <ItemGroup>
     <PackageReference Include="CsvHelper" Version="30.0.1" />
     <PackageReference Include="EPPlus" Version="7.0.0" />

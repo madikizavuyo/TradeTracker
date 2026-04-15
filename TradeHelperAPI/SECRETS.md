@@ -74,7 +74,7 @@ To **force** an immediate run (e.g. after changing prompts), delete the correspo
 
 ## Security notes
 
-- **`appsettings.json` in the repo** has **no real API keys or passwords** (placeholders and LocalDB). For local development, create **`appsettings.Local.json`** in `TradeHelperAPI/` with your connection string, JWT key, TrailBlazer keys, SMTP, etc. That file is **gitignored** and is merged in after `appsettings.json` (see `Program.cs`).
+- **`appsettings.json` in the repo** has **no real API keys or passwords** (placeholders and LocalDB). For local development, create **`appsettings.Local.json`** in `TradeHelperAPI/` with your connection string, JWT key, TrailBlazer keys, SMTP, etc. That file is **gitignored** and is merged in **after** `appsettings.json` **only when `ASPNETCORE_ENVIRONMENT` is Development** (see `Program.cs`). It is **not** published to the server; loading it in Production would override `appsettings.Production.json` and break SQL (e.g. HTTP 500 on `/api/auth/login`).
 - `appsettings.Development.json` is in `.gitignore` – never force-add it.
 - For stronger security, use **User Secrets** instead of appsettings.Development.json:
   ```powershell

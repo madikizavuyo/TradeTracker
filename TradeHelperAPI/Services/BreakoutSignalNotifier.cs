@@ -9,7 +9,7 @@ namespace TradeHelper.Services
 {
     public interface IBreakoutSignalNotifier
     {
-        /// <summary>Sends at most one email per instrument per 24h for STRONG_BUY / STRONG_SELL when SMTP is configured.</summary>
+        /// <summary>Sends at most one email per instrument per 24h for high-conviction setups (box + pullback reversal) when SMTP is configured.</summary>
         Task TryNotifyStrongSignalAsync(TrailBlazerScore score, string instrumentName, CancellationToken cancellationToken = default);
     }
 
@@ -31,8 +31,12 @@ namespace TradeHelper.Services
         public async Task TryNotifyStrongSignalAsync(TrailBlazerScore score, string instrumentName, CancellationToken cancellationToken = default)
         {
             var sig = score.TradeSetupSignal ?? "";
-            if (!string.Equals(sig, "STRONG_BUY", StringComparison.OrdinalIgnoreCase) &&
-                !string.Equals(sig, "STRONG_SELL", StringComparison.OrdinalIgnoreCase))
+            var emailReversalBuy = _config.GetValue("TrailBlazer:EmailReversalBuyAlerts", true);
+            var notify = string.Equals(sig, "STRONG_BUY", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(sig, "STRONG_SELL", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(sig, "STRONG_REVERSAL_BUY", StringComparison.OrdinalIgnoreCase)
+                || (emailReversalBuy && string.Equals(sig, "REVERSAL_BUY", StringComparison.OrdinalIgnoreCase));
+            if (!notify)
                 return;
 
             var to = _config["TrailBlazer:SignalAlertEmail"] ?? _config["Email:AlertTo"];

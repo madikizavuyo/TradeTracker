@@ -221,11 +221,28 @@ namespace TradeHelper.Services
                 if (merged.TryGetValue("CPI", out var cpi) && cpi != 0) { score += cpi > FedInflationTarget + CpiBand ? -1.0 : cpi < FedInflationTarget - CpiBand ? 0.5 : 0; factorsWithData++; }
                 if (merged.TryGetValue("Unemployment", out var unemp) && unemp != 0) { score += unemp < 4 ? 1.5 : unemp < 6 ? 0.5 : -1.5; factorsWithData++; }
                 if (merged.TryGetValue("InterestRate", out var rate) && rate != 0) { score += rate > 3 ? 1.0 : rate > 1 ? 0.5 : -0.5; factorsWithData++; }
-                if (merged.TryGetValue("PMI", out var pmi) && pmi != 0) { score += pmi > 55 ? 1.5 : pmi > 50 ? 0.5 : -1.5; factorsWithData++; }
+                // PMI from heatmap is OECD business confidence (100=neutral), same as metals — not ISM 0–50 scale
+                if (merged.TryGetValue("PMI", out var pmi) && pmi != 0)
+                {
+                    score += pmi > 102 ? 1.5 : pmi > 100 ? 0.5 : pmi < 98 ? -1.5 : pmi < 100 ? -0.5 : 0;
+                    factorsWithData++;
+                }
                 if (merged.TryGetValue("Treasury10Y", out var treasury10Y) && treasury10Y != 0) { score += treasury10Y > 4.5 ? -1.0 : treasury10Y < 3 ? 0.5 : 0; factorsWithData++; }
                 if (merged.TryGetValue("PCE", out var pce) && pce != 0) { score += pce > FedInflationTarget + CpiBand ? -0.5 : pce < FedInflationTarget - CpiBand ? 0.5 : 0; factorsWithData++; }
-                if (merged.TryGetValue("JOLTs", out var jolts) && jolts != 0) { score += jolts > 9 ? 0.5 : jolts < 7 ? -0.5 : 0; factorsWithData++; }
-                if (merged.TryGetValue("JoblessClaims", out var claims) && claims != 0) { score += claims < 250 ? 0.5 : claims > 350 ? -0.5 : 0; factorsWithData++; }
+                // JTSJOL on FRED is thousands of openings (~6900 = 6.9M); compare in millions
+                if (merged.TryGetValue("JOLTs", out var jolts) && jolts != 0)
+                {
+                    var joltsMillions = jolts > 200 ? jolts / 1000.0 : jolts;
+                    score += joltsMillions > 9 ? 0.5 : joltsMillions < 7 ? -0.5 : 0;
+                    factorsWithData++;
+                }
+                // ICSA is weekly claims level (~219000); thresholds are in same scale as thousands (250k, 350k)
+                if (merged.TryGetValue("JoblessClaims", out var claims) && claims != 0)
+                {
+                    var claimsK = claims > 1000 ? claims / 1000.0 : claims;
+                    score += claimsK < 250 ? 0.5 : claimsK > 350 ? -0.5 : 0;
+                    factorsWithData++;
+                }
             }
 
             // Apply geopolitical/narrative overrides (e.g. CAD +0.5 for oil exports, war beneficiary)
