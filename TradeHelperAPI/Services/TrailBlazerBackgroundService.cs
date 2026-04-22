@@ -193,6 +193,18 @@ namespace TradeHelper.Services
 
                 await SaveChangesWithFullErrorLoggingAsync(db, "scores/news/COT/heatmap batch");
 
+                if (_breakoutNotifier != null)
+                {
+                    try
+                    {
+                        await _breakoutNotifier.FlushConsolidatedAsync(CancellationToken.None);
+                    }
+                    catch (Exception ex)
+                    {
+                        _logger.LogWarning(ex, "Consolidated breakout email flush failed");
+                    }
+                }
+
                 db.UserLogs.Add(new UserLog
                 {
                     Email = "system@trailblazer",
@@ -551,9 +563,9 @@ namespace TradeHelper.Services
                 logger.LogDebug("TrailBlazer: {Instrument} COT score preserved from prior ({Score:F1})", instrument.Name, score.COTScore);
             }
 
-            await dataService.ApplyBoxBreakoutTradeSetupAsync(score, instrument.Name, traderNickInsight);
+                await dataService.ApplyBoxBreakoutTradeSetupAsync(score, instrument.Name, traderNickInsight);
             if (breakoutNotifier != null)
-                await breakoutNotifier.TryNotifyStrongSignalAsync(score, instrument.Name);
+                await breakoutNotifier.QueueStrongSignalAsync(score, instrument.Name);
 
             db.TrailBlazerScores.Add(score);
             var hasTechnicalSource = dataSources.Contains("YahooFinance") || dataSources.Contains("TwelveData") || dataSources.Contains("MarketStack") || dataSources.Contains("iTick") || dataSources.Contains("EODHD") || dataSources.Contains("FMP") || dataSources.Contains("NasdaqDataLink");
