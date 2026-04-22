@@ -14,6 +14,22 @@ using TradeHelper.Models;
 using TradeHelper.Services;
 
 var builder = WebApplication.CreateBuilder(args);
+
+// Flat env aliases for MyFXBook (some hosts only allow simple names). Nested keys still work: TrailBlazer__MyFXBookEmail.
+var myFxOverrides = new Dictionary<string, string?>();
+if (string.IsNullOrWhiteSpace(builder.Configuration["TrailBlazer:MyFXBookEmail"]))
+{
+    var e = Environment.GetEnvironmentVariable("MYFXBOOK_EMAIL");
+    if (!string.IsNullOrWhiteSpace(e)) myFxOverrides["TrailBlazer:MyFXBookEmail"] = e;
+}
+if (string.IsNullOrWhiteSpace(builder.Configuration["TrailBlazer:MyFXBookPassword"]))
+{
+    var p = Environment.GetEnvironmentVariable("MYFXBOOK_PASSWORD");
+    if (!string.IsNullOrWhiteSpace(p)) myFxOverrides["TrailBlazer:MyFXBookPassword"] = p;
+}
+if (myFxOverrides.Count > 0)
+    builder.Configuration.AddInMemoryCollection(myFxOverrides!);
+
 // Optional local overrides (real keys); file is gitignored — see SECRETS.md.
 // IMPORTANT: load only in Development. If this file were loaded in Production, it would override
 // appsettings.Production.json (e.g. LocalDB connection string) and break login/API with HTTP 500.
@@ -113,7 +129,9 @@ builder.Services.AddHostedService<DailyPredictionService>();
 
 // TrailBlazer Services
 builder.Services.AddSingleton<TrailBlazerRefreshProgressService>();
+builder.Services.AddSingleton<IBrevoEmailService, BrevoEmailService>();
 builder.Services.AddSingleton<IBreakoutSignalNotifier, BreakoutSignalNotifier>();
+builder.Services.AddSingleton<ICurrencyStrengthAlertNotifier, CurrencyStrengthAlertNotifier>();
 builder.Services.AddHttpClient<TwelveDataService>();
 builder.Services.AddHttpClient<MarketStackService>();
 builder.Services.AddHttpClient<iTickService>();

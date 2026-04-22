@@ -219,6 +219,7 @@ namespace TradeHelper.Services
                     points.Add((d, v));
                 }
                 if (points.Count < 2) return null;
+                points.Sort((a, b) => b.Date.CompareTo(a.Date));
                 var (d0, v0) = points[0];
                 if (v0 == 0) return null;
                 var cutoff = d0.AddYears(-1);
@@ -857,7 +858,24 @@ namespace TradeHelper.Services
                     .ToListAsync();
                 if (fromDb.Count > 0)
                 {
-                    var score = NewsSentimentHelper.ComputeFromTexts(fromDb.Select(a => a.Headline + " " + a.Summary).Where(s => !string.IsNullOrWhiteSpace(s)).ToList());
+                    var texts = fromDb.Select(a => a.Headline + " " + a.Summary).Where(s => !string.IsNullOrWhiteSpace(s)).ToList();
+                    var score = NewsSentimentHelper.ComputeFromTexts(texts);
+                    try
+                    {
+                        using var scope = _scopeFactory.CreateScope();
+                        var ml = scope.ServiceProvider.GetService<MLModelService>();
+                        if (ml != null)
+                        {
+                            var gem = await ml.TryGeminiInstrumentNewsSentimentAsync(symbol, assetClass, texts);
+                            if (gem.HasValue)
+                                score = Math.Clamp(score * 0.42 + gem.Value * 0.58, 1.0, 10.0);
+                        }
+                    }
+                    catch (Exception ex)
+                    {
+                        _logger.LogDebug(ex, "Gemini news sentiment blend skipped (DB cache) for {Symbol}", symbol);
+                    }
+
                     _logger.LogDebug("News for {Symbol}: using {Count} articles from DB (collected within {Hours}h, skipping Brave/Finnhub)", symbol, fromDb.Count, newsReuseHours);
                     return (score, true, new List<NewsItem>()); // Empty items = already in DB, don't re-persist
                 }
@@ -867,7 +885,24 @@ namespace TradeHelper.Services
             if (news == null || news.Count == 0)
                 return (5.0, false, new List<NewsItem>());
 
-            var computedScore = NewsSentimentHelper.ComputeFromTexts(news.Select(n => n.Headline + " " + n.Summary).Where(s => !string.IsNullOrWhiteSpace(s)).ToList());
+            var newsTexts = news.Select(n => n.Headline + " " + n.Summary).Where(s => !string.IsNullOrWhiteSpace(s)).ToList();
+            var computedScore = NewsSentimentHelper.ComputeFromTexts(newsTexts);
+            try
+            {
+                using var scope = _scopeFactory.CreateScope();
+                var ml = scope.ServiceProvider.GetService<MLModelService>();
+                if (ml != null)
+                {
+                    var gem = await ml.TryGeminiInstrumentNewsSentimentAsync(symbol, assetClass, newsTexts);
+                    if (gem.HasValue)
+                        computedScore = Math.Clamp(computedScore * 0.42 + gem.Value * 0.58, 1.0, 10.0);
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger.LogDebug(ex, "Gemini news sentiment blend skipped for {Symbol}", symbol);
+            }
+
             return (computedScore, true, news);
         }
 
@@ -1392,7 +1427,29 @@ namespace TradeHelper.Services
             return new List<double>();
         }
 
-        /// <summary>Box breakout + scanner fusion (Yahoo OHLC). Mutates score. Optional TraderNick transcript nudges STRONG signals when aligned.</summary>
+        /// <summary>Runs the Asset Scanner analyzer with full diagnostic output (all intermediate values). Returns null when no bars are available.</summary>
+        public async Task<AssetScannerSignalAnalyzer.SignalDiagnostic?> DiagnoseSignalAsync(string instrumentName, double overallScore)
+        {
+            if (_yahooFinanceService == null || YahooFinanceService.ToYahooSymbol(instrumentName) == null)
+                return null;
+            var bars = await _yahooFinanceService.FetchDailyOhlcAsync(instrumentName, 120);
+            if (bars == null || bars.Count < 25)
+                return null;
+            return AssetScannerSignalAnalyzer.Diagnose(
+                bars,
+                overallScore,
+                _config.GetValue("TrailBlazer:SignalSwingLookback", 30),
+                _config.GetValue("TrailBlazer:SignalResistanceLookback", 20),
+                _config.GetValue("TrailBlazer:SignalFibTolerancePct", 0.8),
+                _config.GetValue("TrailBlazer:SignalResistanceTolerancePct", 0.5),
+                _config.GetValue("TrailBlazer:SignalFibLookbackBars", 5),
+                _config.GetValue("TrailBlazer:SignalBuyThreshold", 6.0),
+                _config.GetValue("TrailBlazer:SignalSellThreshold", 4.0),
+                _config.GetValue("TrailBlazer:SignalTrendlinePivot", 2),
+                _config.GetValue("TrailBlazer:SignalTrendlineTolerancePct", 0.6));
+        }
+
+        /// <summary>Asset Scanner signal engine (score-led direction + Fib/resistance alignment). Mutates score.</summary>
         public async Task ApplyBoxBreakoutTradeSetupAsync(TrailBlazerScore score, string instrumentName, TraderNickInsight? traderNick = null)
         {
             score.TradeSetupSignal = "NONE";
@@ -1404,27 +1461,27 @@ namespace TradeHelper.Services
                 var bars = await _yahooFinanceService.FetchDailyOhlcAsync(instrumentName, 120);
                 if (bars == null || bars.Count < 25)
                     return;
-                var lookback = _config.GetValue("TrailBlazer:BoxBreakoutLookback", 20);
-                var maxRangePct = _config.GetValue("TrailBlazer:BoxBreakoutMaxRangePct", 4.0);
-                var mention = traderNick?.MentionsSymbol(instrumentName, null) == true;
-                var ts = traderNick?.HasData == true ? (double?)traderNick.SentimentScore : null;
-                var (boxSig, boxDet) = BoxBreakoutSetupAnalyzer.Analyze(bars, score.OverallScore, score.Bias ?? "Neutral", lookback, maxRangePct, ts, mention);
-                var finalSig = boxSig;
-                var finalDet = boxDet;
-                if (_config.GetValue("TrailBlazer:PullbackReversalEnabled", true) && bars.Count >= 55)
-                {
-                    var phS = _config.GetValue("TrailBlazer:ReversalPriorHighStart", 10);
-                    var phE = _config.GetValue("TrailBlazer:ReversalPriorHighEnd", 50);
-                    var rlS = _config.GetValue("TrailBlazer:ReversalRecentLowStart", 1);
-                    var rlE = _config.GetValue("TrailBlazer:ReversalRecentLowEnd", 14);
-                    var minDd = _config.GetValue("TrailBlazer:ReversalMinDrawdownPct", 4.0);
-                    var minRc = _config.GetValue("TrailBlazer:ReversalMinReclaimFromLowPct", 1.0);
-                    var strDd = _config.GetValue("TrailBlazer:ReversalStrongDrawdownPct", 6.5);
-                    var (revSig, revDet) = PullbackReversalSetupAnalyzer.Analyze(
-                        bars, score.OverallScore, score.Bias ?? "Neutral",
-                        phS, phE, rlS, rlE, minDd, minRc, strDd);
-                    (finalSig, finalDet) = TradeSetupMergeHelper.MergeBoxAndPullbackReversal(boxSig, boxDet ?? "", revSig, revDet ?? "");
-                }
+                var swingLookback = _config.GetValue("TrailBlazer:SignalSwingLookback", 30);
+                var continuationLookback = _config.GetValue("TrailBlazer:SignalResistanceLookback", 20);
+                var fibTolerance = _config.GetValue("TrailBlazer:SignalFibTolerancePct", 0.8);
+                var continuationTolerance = _config.GetValue("TrailBlazer:SignalResistanceTolerancePct", 0.5);
+                var fibLookbackBars = _config.GetValue("TrailBlazer:SignalFibLookbackBars", 5);
+                var buyThreshold = _config.GetValue("TrailBlazer:SignalBuyThreshold", 6.0);
+                var sellThreshold = _config.GetValue("TrailBlazer:SignalSellThreshold", 4.0);
+                var trendlinePivot = _config.GetValue("TrailBlazer:SignalTrendlinePivot", 2);
+                var trendlineTolerance = _config.GetValue("TrailBlazer:SignalTrendlineTolerancePct", 0.6);
+                var (finalSig, finalDet) = AssetScannerSignalAnalyzer.Analyze(
+                    bars,
+                    score.OverallScore,
+                    swingLookback,
+                    continuationLookback,
+                    fibTolerance,
+                    continuationTolerance,
+                    fibLookbackBars,
+                    buyThreshold,
+                    sellThreshold,
+                    trendlinePivot,
+                    trendlineTolerance);
                 score.TradeSetupSignal = finalSig;
                 score.TradeSetupDetail = finalDet != null && finalDet.Length > 500 ? finalDet[..500] : finalDet;
             }
@@ -2074,7 +2131,11 @@ namespace TradeHelper.Services
 
             if (string.IsNullOrEmpty(MyFxBookEmail) || string.IsNullOrEmpty(MyFxBookPassword))
             {
-                diag["api"] = new { status = "SKIPPED", reason = "MyFXBook credentials not configured (TrailBlazer:MyFXBookEmail, TrailBlazer:MyFXBookPassword)" };
+                diag["api"] = new
+                {
+                    status = "SKIPPED",
+                    reason = "MyFXBook credentials not configured. Set TrailBlazer:MyFXBookEmail and TrailBlazer:MyFXBookPassword (appsettings / Production), or env TrailBlazer__MyFXBookEmail / TrailBlazer__MyFXBookPassword, or MYFXBOOK_EMAIL / MYFXBOOK_PASSWORD. Optional: TrailBlazer:MyFXBookSession for a browser session id."
+                };
                 return (result, diag);
             }
 
@@ -2273,8 +2334,8 @@ namespace TradeHelper.Services
                 ["JPY"] = new() { ["GDP"] = "JPNRGDPEXP", ["CPI"] = "JPNCPIALLMINMEI", ["Unemployment"] = "LRHUTTTTJPM156S", ["InterestRate"] = "IRSTCB01JPM156N", ["PMI"] = "BSCICP03JPM665S" },
                 ["AUD"] = new() { ["GDP"] = "AUSGDPNQDSMEI", ["CPI"] = "AUSCPIALLQINMEI", ["Unemployment"] = "LRHUTTTTAUM156S", ["InterestRate"] = "IRSTCI01AUM156N", ["PMI"] = "BSCICP03AUM665S" },
                 ["NZD"] = new() { ["GDP"] = "NZLGDPNQDSMEI", ["CPI"] = "NZLCPIALLQINMEI", ["Unemployment"] = "LRHUTTTTNZA156N", ["InterestRate"] = "IRSTCI01NZM156N", ["PMI"] = "BSCICP03NZM665S" },
-                // Canada: no BSCICP03 composite on FRED — OECD CLI business situation (normalised) as PMI proxy
-                ["CAD"] = new() { ["GDP"] = "NAEXKP01CAQ189S", ["CPI"] = "CANCPIALLMINMEI", ["Unemployment"] = "LRHUTTTTCAM156S", ["InterestRate"] = "IRSTCB01CAM156N", ["PMI"] = "CANLOCOBSNOSTSAM" },
+                // Canada: OECD BCI (BSCICP03CAM665S) — active. CANLOCOBSNOSTSAM (legacy Normalised BCI) was discontinued Jan 2024.
+                ["CAD"] = new() { ["GDP"] = "NAEXKP01CAQ189S", ["CPI"] = "CANCPIALLMINMEI", ["Unemployment"] = "LRHUTTTTCAM156S", ["InterestRate"] = "IRSTCB01CAM156N", ["PMI"] = "BSCICP03CAM665S" },
                 ["CHF"] = new() { ["GDP"] = "CLVMNACSCAB1GQCH", ["CPI"] = "CHECPIALLMINMEI", ["Unemployment"] = "LRHUTTTTCHQ156S", ["InterestRate"] = "IRSTCI01CHM156N", ["PMI"] = "BSCICP03CHM665S" },
                 ["SEK"] = new() { ["GDP"] = "CLVMNACSCAB1GQSE", ["CPI"] = "CP0000SEM086NEST", ["Unemployment"] = "LRHUTTTTSEM156S", ["InterestRate"] = "IRSTCI01SEM156N", ["PMI"] = "BSCICP03SEM665S" },
                 ["ZAR"] = new() { ["GDP"] = "ZAFGDPRQPSMEI", ["CPI"] = "ZAFCPIALLMINMEI", ["Unemployment"] = "LRUN64TTZAQ156S", ["InterestRate"] = "IRSTCB01ZAM156N", ["PMI"] = "BSCICP03ZAM665S" },
@@ -2308,13 +2369,43 @@ namespace TradeHelper.Services
                     else if (indicator == "CPI" || indicator == "PCE")
                     {
                         var obsCount = (indicator == "PCE" || cpiQuarterlySeries.Contains(seriesId)) ? 5 : 13;
-                        var cal = await FetchFredYoYPercentCalendarAsync(seriesId);
+                        var calLimit = seriesId.Contains("CP0000", StringComparison.OrdinalIgnoreCase) ? 240 : 120;
+                        var cal = await FetchFredYoYPercentCalendarAsync(seriesId, calLimit);
                         var yoy = cal ?? await FetchFredYoYPercentAsync(seriesId, obsCount);
                         value = yoy ?? 0;
+                        // Secondary fallback: FRED "growth rate, same period previous year" series for Eurostat HICP (EUR area, SEK).
+                        if ((value == 0 || Math.Abs(value) < 1e-6) && indicator == "CPI")
+                        {
+                            string? altYoYSeries = null;
+                            if (string.Equals(currency, "EUR", StringComparison.OrdinalIgnoreCase)) altYoYSeries = "CPHPTT01EZM659N";
+                            else if (string.Equals(currency, "SEK", StringComparison.OrdinalIgnoreCase)) altYoYSeries = "CPALTT01SEM659N";
+                            if (altYoYSeries != null)
+                            {
+                                var direct = await FetchFredDataAsync(altYoYSeries);
+                                if (direct != 0 && Math.Abs(direct) < 50) value = direct;
+                            }
+                        }
                     }
                     else
                     {
                         value = await FetchFredDataAsync(seriesId);
+                        // CAD PMI: BSCICP03CAM665S is primary; fall back through legacy series if empty.
+                        if (string.Equals(currency, "CAD", StringComparison.OrdinalIgnoreCase) && indicator == "PMI" && (value == 0 || Math.Abs(value) < 1e-6))
+                        {
+                            foreach (var altPmiSeries in new[] { "CANLOCOBSNOSTSAM", "BSCICP02CAM460S", "CSCICP03CAM665S" })
+                            {
+                                var altPmi = await FetchFredDataAsync(altPmiSeries);
+                                if (altPmi != 0) { value = altPmi; break; }
+                            }
+                        }
+                        if (indicator == "JoblessClaims" && value > 5000)
+                            value /= 1000.0;
+                    }
+
+                    if ((indicator == "CPI" || indicator == "PCE") && value != 0 && (Math.Abs(value) > 25 || double.IsNaN(value) || double.IsInfinity(value)))
+                    {
+                        _logger.LogWarning("Heatmap CPI/PCE implausible for {Currency} ({SeriesId}): {Value} — cleared for World Bank fallback", currency, seriesId, value);
+                        value = 0;
                     }
 
                     if (indicator == "GDP" && value != 0 && (Math.Abs(value) > 22 || double.IsNaN(value) || double.IsInfinity(value)))

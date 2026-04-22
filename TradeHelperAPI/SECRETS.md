@@ -26,8 +26,15 @@ Add these to `appsettings.Development.json` or environment variables:
 | `TrailBlazer:EodhdApiKey` | Technical fallback. https://eodhd.com/ |
 | `TrailBlazer:FmpApiKey` | Technical fallback. https://site.financialmodelingprep.com/ |
 | `TrailBlazer:NasdaqDataLinkApiKey` | Technical fallback. https://data.nasdaq.com/ |
-| `TrailBlazer:MyFXBookEmail` / `MyFXBookPassword` | Retail sentiment. https://www.myfxbook.com/ |
+| `TrailBlazer:MyFXBookEmail` / `TrailBlazer:MyFXBookPassword` | Retail sentiment (required for MyFXBook batch). Same as `MyFXBook:Email` / `MyFXBook:Password`. https://www.myfxbook.com/ |
 | `TrailBlazer:MyFXBookSession` | Optional. Use session ID directly instead of login (e.g. from browser cookie). Takes precedence over email/password. |
+
+**Production (e.g. SmarterASP):** If retail sentiment logs say credentials are not configured, set **either**:
+
+- **Application / environment variables:** `TrailBlazer__MyFXBookEmail`, `TrailBlazer__MyFXBookPassword` (double underscore), **or** flat aliases `MYFXBOOK_EMAIL`, `MYFXBOOK_PASSWORD` (supported in `Program.cs`), **or**
+- Edit **`appsettings.Production.json`** on the server (FTP) and add `MyFXBookEmail` / `MyFXBookPassword` under the `TrailBlazer` section — **do not commit real passwords to git.**
+
+Restart the site after changing env or config.
 | `TrailBlazer:ExchangeRateApiKey` | Currency conversion. https://www.exchangerate-api.com/ |
 | `TrailBlazer:YahooFinanceEnabled` | Default `true`. Yahoo Finance (unofficial chart/quote/news) as primary for technicals, forex quotes, and news when mappable; no API key. Set `false` to disable. |
 | `TrailBlazer:SignalAlertEmail` | Optional. If set and `Email:SmtpHost` / `Email:From` are configured, sends at most one email per instrument per 24h when a **STRONG_BUY** or **STRONG_SELL** box-breakout + scanner signal fires. |

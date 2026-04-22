@@ -11,6 +11,7 @@ namespace TradeHelper.Services
         private readonly IConfiguration _config;
         private readonly TrailBlazerRefreshProgressService _progress;
         private readonly IBreakoutSignalNotifier? _breakoutNotifier;
+        private readonly ICurrencyStrengthAlertNotifier? _currencyAlerts;
         private readonly ILogger<TrailBlazerBackgroundService> _logger;
 
         public TrailBlazerBackgroundService(
@@ -18,13 +19,15 @@ namespace TradeHelper.Services
             IConfiguration config,
             TrailBlazerRefreshProgressService progress,
             ILogger<TrailBlazerBackgroundService> logger,
-            IBreakoutSignalNotifier? breakoutNotifier = null)
+            IBreakoutSignalNotifier? breakoutNotifier = null,
+            ICurrencyStrengthAlertNotifier? currencyAlerts = null)
         {
             _provider = provider;
             _config = config;
             _progress = progress;
             _logger = logger;
             _breakoutNotifier = breakoutNotifier;
+            _currencyAlerts = currencyAlerts;
         }
 
         protected override async Task ExecuteAsync(CancellationToken stoppingToken)
@@ -132,6 +135,17 @@ namespace TradeHelper.Services
 
                 var currencyOverrides = await LoadCurrencyOverridesAsync(db);
                 var currencyStrength = await LoadCombinedCurrencyStrengthAsync(db, heatmapEntries, newsCacheHours);
+                if (_currencyAlerts != null && currencyStrength.Count > 0)
+                {
+                    try
+                    {
+                        await _currencyAlerts.TryNotifyCrossThresholdAsync(currencyStrength, CancellationToken.None);
+                    }
+                    catch (Exception ex)
+                    {
+                        _logger.LogWarning(ex, "Currency strength cross-threshold notification failed");
+                    }
+                }
 
                 TraderNickInsight? traderNickInsight = null;
                 try
@@ -370,7 +384,8 @@ namespace TradeHelper.Services
                 .Skip(1)
                 .FirstOrDefaultAsync();
 
-            // Retail sentiment: MyFXBook community outlook. Never overwrite with 50/50 or empty — preserve existing if incoming is invalid.
+            // Retail sentiment: only use currently fetched data.
+            // If provider data is unavailable/neutral placeholder, do not preserve stale prior values.
             var sentimentResult = await dataService.FetchForexRetailSentimentAsync(instrument.Name, myFxBookSentiment);
             var retailSentiment = sentimentResult ?? (50.0, 50.0);
             var latestScore = await db.TrailBlazerScores
@@ -379,23 +394,14 @@ namespace TradeHelper.Services
                 .FirstOrDefaultAsync();
 
             var incomingRetailIsEmpty = !sentimentResult.HasValue || (Math.Abs(retailSentiment.longPct - 50) < 1 && Math.Abs(retailSentiment.shortPct - 50) < 1);
-            if (incomingRetailIsEmpty)
-            {
-                var existingIsValid = latestScore != null && (Math.Abs(latestScore.RetailLongPct - 50) >= 1 || Math.Abs(latestScore.RetailShortPct - 50) >= 1);
-                if (existingIsValid)
-                {
-                    retailSentiment = (latestScore!.RetailLongPct, latestScore.RetailShortPct);
-                    dataSources.Add("myfxbook"); // preserved from prior load
-                    logger.LogDebug("TrailBlazer: {Instrument} retail preserved ({Long:F0}/{Short:F0})", instrument.Name, retailSentiment.longPct, retailSentiment.shortPct);
-                }
-                else
-                {
-                    logger.LogDebug("TrailBlazer: {Instrument} has no retail data (MyFXBook empty or 50/50, no existing to preserve)", instrument.Name);
-                }
-            }
-            else if (sentimentResult.HasValue)
+            if (!incomingRetailIsEmpty && sentimentResult.HasValue)
             {
                 dataSources.Add("myfxbook");
+            }
+            else
+            {
+                retailSentiment = (50.0, 50.0);
+                logger.LogDebug("TrailBlazer: {Instrument} has no current retail data (provider unavailable/empty) — retail excluded from scoring", instrument.Name);
             }
 
             // Only write to DB when we got viable data from endpoint; never when using preserved/prior data
@@ -430,8 +436,10 @@ namespace TradeHelper.Services
             var effectiveNewsScore = newsSentimentScore;
             if (traderNickInsight?.HasData == true)
             {
-                var w = traderNickInsight.MentionsSymbol(instrument.Name, instrument.AssetClass) ? 0.42 : 0.18;
+                var w = traderNickInsight.MentionsSymbol(instrument.Name, instrument.AssetClass) ? 0.55 : 0.32;
                 effectiveNewsScore = Math.Clamp((1.0 - w) * effectiveNewsScore + w * traderNickInsight.SentimentScore, 1.0, 10.0);
+                if (!dataSources.Contains("TraderNickTranscript"))
+                    dataSources.Add("TraderNickTranscript");
             }
             if (hasNewsSentiment)
             {
@@ -443,14 +451,14 @@ namespace TradeHelper.Services
                     var now = DateTime.UtcNow;
                     foreach (var item in newsItems)
                     {
-                        db.NewsArticles.Add(new TradeHelper.Models.NewsArticle
+                        db.NewsArticles.Add(new NewsArticle
                         {
-                            Symbol = instrument.Name,
-                            Headline = item.Headline,
-                            Summary = item.Summary ?? "",
-                            Source = item.Source ?? "",
-                            Url = item.Url ?? "",
-                            ImageUrl = item.ImageUrl ?? "",
+                            Symbol = NewsArticle.TruncateTo(instrument.Name, NewsArticle.MaxSymbolLength),
+                            Headline = NewsArticle.TruncateTo(item.Headline, NewsArticle.MaxHeadlineLength),
+                            Summary = NewsArticle.TruncateTo(item.Summary, NewsArticle.MaxSummaryLength),
+                            Source = NewsArticle.TruncateTo(item.Source, NewsArticle.MaxSourceLength),
+                            Url = NewsArticle.TruncateTo(item.Url, NewsArticle.MaxUrlLength),
+                            ImageUrl = NewsArticle.TruncateTo(item.ImageUrl, NewsArticle.MaxImageUrlLength),
                             PublishedAt = item.PublishedAt,
                             DateCollected = now
                         });
@@ -470,9 +478,6 @@ namespace TradeHelper.Services
                     dataSources.Add("Yahoo/Finnhub/Brave");
                 }
             }
-
-            if (traderNickInsight?.HasData == true && !dataSources.Contains("GoogleNews"))
-                dataSources.Add("TraderNickTranscript");
 
             var hasRetail = dataSources.Contains("myfxbook");
             var hasNews = dataSources.Contains("GoogleNews") || dataSources.Contains("TraderNickTranscript");

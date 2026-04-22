@@ -162,7 +162,15 @@ export interface TrailBlazerScore {
   currencyStrengthScore?: number;
   dataSources?: string | null;
   dateComputed: string;
-  /** Box breakout + scanner: NONE, WATCH, BUY, STRONG_BUY, SELL, STRONG_SELL */
+  /** Asset scanner setup signal. Tiers (strongest → weakest):
+   *  BUY NOW / SELL NOW                          (all aligned: score + Fib 50/61.8% + continuation S/R or trendline)
+   *  STRONG_REVERSAL_BUY / STRONG_REVERSAL_SELL  (61.8% Fib touched)
+   *  REVERSAL_BUY / REVERSAL_SELL                (50% Fib touched)
+   *  RESISTANCE_BUY / RESISTANCE_SELL            (bounce/reject at horizontal trend support/resistance)
+   *  TRENDLINE_BUY / TRENDLINE_SELL              (bounce/reject at ascending/descending trendline)
+   *  BUY / SELL                                  (directional from score only)
+   *  WATCH  (score in 4–6 neutral band) | NONE | legacy STRONG_BUY/STRONG_SELL
+   */
   tradeSetupSignal?: string | null;
   tradeSetupDetail?: string | null;
 }

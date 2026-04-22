@@ -84,38 +84,39 @@ namespace TradeHelper.Services
             };
         }
 
-        /// <summary>Returns (wF, wCOT, wR, wNews, wT, wCS) weights. wCS = currency strength (80% news+20% fundamentals).</summary>
+        /// <summary>Returns (wF, wCOT, wR, wNews, wT, wCS) weights. wCS = currency strength (blend of macro + news per pair).</summary>
         private static (double wF, double wCOT, double wR, double wNews, double wT, double wCS) GetWeights(ScoringWeightContext ctx, bool hasCurrencyStrength)
         {
             var ac = ctx.AssetClass ?? "";
             var isForex = ac.StartsWith("Forex", StringComparison.OrdinalIgnoreCase);
-            const double wCurrencyStrength = 0.10; // 10% when available (forex or USD commodities)
+            const double wCurrencyStrength = 0.15; // 15% when available (forex or USD commodities)
 
             double wF, wCOT, wR, wNews, wT;
 
-            const double wFundamental = 0.11;
+            const double wFundamental = 0.10;
 
+            // Pre-normalization targets: news 26% and CS 15% when all pillars exist; technical/COT trimmed vs prior 18%/10%.
             if (isForex)
             {
                 if (ctx.HasCOT && ctx.HasRetail)
-                    (wF, wCOT, wR, wNews, wT) = (wFundamental, 0.26, 0.14, 0.18, 0.21);
+                    (wF, wCOT, wR, wNews, wT) = (wFundamental, 0.23, 0.14, 0.26, 0.12);
                 else if (!ctx.HasCOT && ctx.HasRetail)
-                    (wF, wCOT, wR, wNews, wT) = (wFundamental, 0, 0.14, 0.18, 0.47);
+                    (wF, wCOT, wR, wNews, wT) = (wFundamental, 0, 0.14, 0.26, 0.35);
                 else if (ctx.HasCOT && !ctx.HasRetail)
-                    (wF, wCOT, wR, wNews, wT) = (wFundamental, 0.26, 0, 0.18, 0.35);
+                    (wF, wCOT, wR, wNews, wT) = (wFundamental, 0.23, 0, 0.26, 0.26);
                 else
-                    (wF, wCOT, wR, wNews, wT) = (wFundamental, 0, 0, 0.18, 0.61);
+                    (wF, wCOT, wR, wNews, wT) = (wFundamental, 0, 0, 0.26, 0.49);
             }
             else
             {
                 (wF, wCOT, wR, wNews, wT) = ac.ToUpperInvariant() switch
                 {
-                    "METAL" => (wFundamental, 0, 0, 0.18, 0.61),
-                    "INDEX" => (wFundamental, 0, 0, 0.18, 0.61),
-                    "COMMODITY" => (wFundamental, 0, 0, 0.18, 0.61),
-                    "BOND" => (wFundamental, 0, 0, 0.18, 0.61),
-                    "CRYPTO" => (wFundamental, 0.23, 0, 0.18, 0.38),
-                    _ => (wFundamental, 0, 0, 0.18, 0.61)
+                    "METAL" => (wFundamental, 0, 0, 0.26, 0.49),
+                    "INDEX" => (wFundamental, 0, 0, 0.26, 0.49),
+                    "COMMODITY" => (wFundamental, 0, 0, 0.26, 0.49),
+                    "BOND" => (wFundamental, 0, 0, 0.26, 0.49),
+                    "CRYPTO" => (wFundamental, 0.22, 0, 0.26, 0.27),
+                    _ => (wFundamental, 0, 0, 0.26, 0.49)
                 };
             }
 
@@ -128,7 +129,7 @@ namespace TradeHelper.Services
 
             var total = f + cot + r + news + t + cs;
             if (total <= 0)
-                return (0.18, 0.18, 0.18, 0.18, 0.18, 0.10);
+                return (0.16, 0.16, 0.16, 0.20, 0.16, 0.16);
 
             return (f / total, cot / total, r / total, news / total, t / total, cs / total);
         }

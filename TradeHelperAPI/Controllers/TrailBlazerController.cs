@@ -761,14 +761,14 @@ namespace TradeHelper.Controllers
             var now = DateTime.UtcNow;
             foreach (var item in fetched)
             {
-                _context.NewsArticles.Add(new TradeHelper.Models.NewsArticle
+                _context.NewsArticles.Add(new NewsArticle
                 {
-                    Symbol = normalized,
-                    Headline = item.Headline,
-                    Summary = item.Summary,
-                    Source = item.Source,
-                    Url = item.Url,
-                    ImageUrl = item.ImageUrl ?? "",
+                    Symbol = NewsArticle.TruncateTo(normalized, NewsArticle.MaxSymbolLength),
+                    Headline = NewsArticle.TruncateTo(item.Headline, NewsArticle.MaxHeadlineLength),
+                    Summary = NewsArticle.TruncateTo(item.Summary, NewsArticle.MaxSummaryLength),
+                    Source = NewsArticle.TruncateTo(item.Source, NewsArticle.MaxSourceLength),
+                    Url = NewsArticle.TruncateTo(item.Url, NewsArticle.MaxUrlLength),
+                    ImageUrl = NewsArticle.TruncateTo(item.ImageUrl, NewsArticle.MaxImageUrlLength),
                     PublishedAt = item.PublishedAt,
                     DateCollected = now
                 });
@@ -908,6 +908,91 @@ namespace TradeHelper.Controllers
                 percent = p.Percent,
                 completedAt = p.CompletedAt,
                 error = p.Error
+            });
+        }
+
+        /// <summary>Diagnostic for a specific instrument's Asset Scanner signal: full analyzer intermediates (fib levels, swing H/L, touch flags, S/R, trendline) + email notifier state (last alert, recipients, SMTP config) + recent Breakout alert logs. Admin only.</summary>
+        [Authorize(Roles = "Admin")]
+        [HttpGet("signal-diagnostic/{symbol}")]
+        public async Task<IActionResult> SignalDiagnostic(string symbol)
+        {
+            var upper = (symbol ?? "").Trim().ToUpperInvariant();
+            if (string.IsNullOrEmpty(upper))
+                return BadRequest(new { message = "symbol required" });
+
+            var instrument = await _context.Instruments.FirstOrDefaultAsync(i => i.Name == upper);
+            if (instrument == null)
+                return NotFound(new { message = $"Instrument {upper} not found" });
+
+            var latestScore = await _context.TrailBlazerScores
+                .Where(s => s.InstrumentId == instrument.Id)
+                .OrderByDescending(s => s.DateComputed)
+                .FirstOrDefaultAsync();
+
+            if (latestScore == null)
+                return NotFound(new { message = $"No TrailBlazerScore for {upper} yet" });
+
+            var diag = await _dataService.DiagnoseSignalAsync(upper, latestScore.OverallScore);
+
+            var alertPrefix = $"BreakoutAlertSent_{upper}_";
+            var alertRows = await _context.SystemSettings
+                .Where(s => s.Key.StartsWith(alertPrefix))
+                .ToListAsync();
+            var alertHistory = alertRows.Select(r =>
+            {
+                DateTime? when = DateTime.TryParse(r.Value, null, System.Globalization.DateTimeStyles.RoundtripKind, out var dt) ? dt : null;
+                return new
+                {
+                    signal = r.Key.Substring(alertPrefix.Length).Replace("_", " "),
+                    lastSentUtc = when,
+                    hoursSince = when.HasValue ? (DateTime.UtcNow - when.Value).TotalHours : (double?)null
+                };
+            }).OrderByDescending(x => x.lastSentUtc).ToList();
+
+            var recipientCount = await _context.Users.AsNoTracking()
+                .Where(u => u.Email != null && u.Email != "")
+                .Select(u => u.Email!)
+                .Distinct()
+                .CountAsync();
+
+            var fromEmail = _configuration["Email:From"];
+            var smtpHost = _configuration["Email:SmtpHost"];
+            var smtpConfigured = !string.IsNullOrWhiteSpace(fromEmail) && !string.IsNullOrWhiteSpace(smtpHost);
+
+            var since = DateTime.UtcNow.AddHours(-72);
+            var logs = await _context.ApplicationLogs
+                .Where(l => l.Timestamp >= since)
+                .Where(l => l.Message.Contains(upper) || l.Category.Contains("BreakoutSignalNotifier") || l.Category.Contains("BrevoEmailService"))
+                .OrderByDescending(l => l.Timestamp)
+                .Take(40)
+                .Select(l => new { l.Timestamp, l.Level, l.Category, l.Message, l.Exception })
+                .ToListAsync();
+
+            return Ok(new
+            {
+                instrument = upper,
+                latestScore = new
+                {
+                    latestScore.OverallScore,
+                    latestScore.Bias,
+                    latestScore.TradeSetupSignal,
+                    latestScore.TradeSetupDetail,
+                    latestScore.DateComputed,
+                    latestScore.DataSources
+                },
+                analyzerDiagnostic = diag,
+                emailStatus = new
+                {
+                    fromEmail,
+                    smtpHost,
+                    smtpConfigured,
+                    fromName = _configuration["Email:FromName"],
+                    usersWithEmail = recipientCount,
+                    fallbackAlertTo = _configuration["TrailBlazer:SignalAlertEmail"] ?? _configuration["Email:AlertTo"],
+                    alertReversalBuyEnabled = _configuration.GetValue("TrailBlazer:EmailReversalBuyAlerts", true)
+                },
+                alertHistory,
+                recentLogs = logs
             });
         }
 

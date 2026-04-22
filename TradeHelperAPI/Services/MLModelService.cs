@@ -340,6 +340,107 @@ Reply ONLY with a JSON object, no other text. Example format:
                 return null;
             }
         }
+
+        private const string GeminiNewsSentimentLastCallKey = "GeminiNewsSentimentLastCallUtc";
+
+        private async Task<bool> IsNewsSentimentGeminiCooldownActiveAsync()
+        {
+            var minH = _configuration.GetValue("TrailBlazer:GeminiNewsSentimentMinHours", 3);
+            if (minH <= 0) return false;
+            using var scope = _scopeFactory.CreateScope();
+            var db = scope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
+            var setting = await db.SystemSettings.FirstOrDefaultAsync(s => s.Key == GeminiNewsSentimentLastCallKey);
+            if (setting == null || string.IsNullOrEmpty(setting.Value)) return false;
+            if (!DateTime.TryParse(setting.Value, null, System.Globalization.DateTimeStyles.RoundtripKind, out var last))
+                return false;
+            var elapsed = (DateTime.UtcNow - last).TotalHours;
+            if (elapsed < minH)
+            {
+                _logger.LogDebug("Gemini news sentiment: skipping (cooldown {Elapsed:F1}h / {Hours}h)", elapsed, minH);
+                return true;
+            }
+            return false;
+        }
+
+        private async Task RecordNewsSentimentGeminiCallAsync()
+        {
+            using var scope = _scopeFactory.CreateScope();
+            var db = scope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
+            var now = DateTime.UtcNow.ToString("o");
+            var setting = await db.SystemSettings.FirstOrDefaultAsync(s => s.Key == GeminiNewsSentimentLastCallKey);
+            if (setting != null)
+            {
+                setting.Value = now;
+                setting.UpdatedAt = DateTime.UtcNow;
+            }
+            else
+                db.SystemSettings.Add(new SystemSetting { Key = GeminiNewsSentimentLastCallKey, Value = now, UpdatedAt = DateTime.UtcNow });
+            await db.SaveChangesAsync();
+        }
+
+        /// <summary>Single-instrument news sentiment 1–10 via Gemini (separate cooldown from global Gemini). Blended with keyword score in TrailBlazer.</summary>
+        public async Task<double?> TryGeminiInstrumentNewsSentimentAsync(string symbol, string? assetClass, IReadOnlyList<string> headlineTexts)
+        {
+            if (!_configuration.GetValue("TrailBlazer:GeminiNewsSentimentEnabled", true))
+                return null;
+            if (headlineTexts == null || headlineTexts.Count == 0)
+                return null;
+            if (await IsNewsSentimentGeminiCooldownActiveAsync())
+                return null;
+
+            var blob = string.Join("\n", headlineTexts.Take(12).Select((t, i) => $"{i + 1}. {t}"));
+            if (string.IsNullOrWhiteSpace(blob))
+                return null;
+
+            var ac = string.IsNullOrWhiteSpace(assetClass) ? "unknown" : assetClass;
+            var prompt = $@"You are a market sentiment analyst. Given recent news headlines about this tradable symbol, output a single sentiment score from 1 (very bearish) to 10 (very bullish) for how the news affects short-term outlook for traders.
+
+Symbol: {symbol}
+Asset class: {ac}
+
+HEADLINES:
+{blob}
+
+Reply with ONLY one number from 1 to 10, nothing else.";
+
+            try
+            {
+                var model = _configuration["Google:AnalysisModel"] ?? _configuration["Google:GeminiModel"] ?? "gemini-2.0-flash";
+                var requestBody = new { contents = new[] { new { parts = new[] { new { text = prompt } } } }, generationConfig = new { maxOutputTokens = 32, temperature = 0.2 } };
+                var json = JsonSerializer.Serialize(requestBody);
+                var content = new StringContent(json, Encoding.UTF8, "application/json");
+                var url = $"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={_apiKey}";
+                var response = await _httpClient.PostAsync(url, content);
+                if (!response.IsSuccessStatusCode)
+                    return null;
+
+                var responseContent = await response.Content.ReadAsStringAsync();
+                using var responseJson = JsonDocument.Parse(responseContent);
+                if (!responseJson.RootElement.TryGetProperty("candidates", out var candidates) || candidates.GetArrayLength() == 0)
+                    return null;
+
+                var text = candidates[0].GetProperty("content").GetProperty("parts")[0].GetProperty("text").GetString()?.Trim();
+                if (string.IsNullOrEmpty(text))
+                    return null;
+
+                var digits = new string(text.Where(c => char.IsDigit(c) || c == '.').ToArray());
+                if (!double.TryParse(digits, System.Globalization.NumberStyles.Any, System.Globalization.CultureInfo.InvariantCulture, out var score))
+                {
+                    var first = text.Split([' ', '\n', '\r', '\t'], StringSplitOptions.RemoveEmptyEntries).FirstOrDefault();
+                    if (first == null || !double.TryParse(first, System.Globalization.NumberStyles.Any, System.Globalization.CultureInfo.InvariantCulture, out score))
+                        return null;
+                }
+
+                score = Math.Clamp(score, 1.0, 10.0);
+                await RecordNewsSentimentGeminiCallAsync();
+                return score;
+            }
+            catch (Exception ex)
+            {
+                _logger.LogDebug(ex, "TryGeminiInstrumentNewsSentimentAsync failed for {Symbol}", symbol);
+                return null;
+            }
+        }
     }
 
     /// <summary>Context for AI instrument analysis.</summary>
