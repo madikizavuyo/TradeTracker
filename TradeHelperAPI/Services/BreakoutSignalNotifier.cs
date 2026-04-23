@@ -45,8 +45,13 @@ namespace TradeHelper.Services
         public async Task QueueStrongSignalAsync(TrailBlazerScore score, string instrumentName, CancellationToken cancellationToken = default)
         {
             var sig = (score.TradeSetupSignal ?? "").Trim();
-            if (!IsAlertWorthy(sig))
+            var confluenceCount = CountAlignedConfluences(sig, score.TradeSetupDetail);
+            if (!IsAlertWorthy(sig) || confluenceCount < 1)
+            {
+                if (IsAlertWorthy(sig) && confluenceCount < 1)
+                    _logger.LogDebug("Breakout alert skipped (<1 confluence): {Instrument} {Signal} ({ConfluenceCount})", instrumentName, sig, confluenceCount);
                 return;
+            }
 
             var key = BuildDedupeKey(instrumentName, sig);
             var now = DateTime.UtcNow;
@@ -170,9 +175,57 @@ namespace TradeHelper.Services
                 || string.Equals(signal, "STRONG_REVERSAL_SELL", StringComparison.OrdinalIgnoreCase)
                 || string.Equals(signal, "BUY NOW", StringComparison.OrdinalIgnoreCase)
                 || string.Equals(signal, "SELL NOW", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(signal, "GOLDEN_ZONE_BUY", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(signal, "GOLDEN_ZONE_SELL", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(signal, "DOUBLE_CONFLUENCE_BUY", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(signal, "DOUBLE_CONFLUENCE_SELL", StringComparison.OrdinalIgnoreCase)
                 || (emailReversalBuy && (
                         string.Equals(signal, "REVERSAL_BUY", StringComparison.OrdinalIgnoreCase)
                      || string.Equals(signal, "REVERSAL_SELL", StringComparison.OrdinalIgnoreCase)));
+        }
+
+        private static int CountAlignedConfluences(string signal, string? detail)
+        {
+            if (string.IsNullOrWhiteSpace(signal))
+                return 0;
+
+            if (string.Equals(signal, "BUY NOW", StringComparison.OrdinalIgnoreCase) ||
+                string.Equals(signal, "SELL NOW", StringComparison.OrdinalIgnoreCase))
+                return 3; // Fib touch + horizontal level + trendline confluence zone.
+
+            if (string.Equals(signal, "DOUBLE_CONFLUENCE_BUY", StringComparison.OrdinalIgnoreCase) ||
+                string.Equals(signal, "DOUBLE_CONFLUENCE_SELL", StringComparison.OrdinalIgnoreCase))
+                return 2; // Horizontal + trendline.
+
+            if (string.Equals(signal, "GOLDEN_ZONE_BUY", StringComparison.OrdinalIgnoreCase) ||
+                string.Equals(signal, "GOLDEN_ZONE_SELL", StringComparison.OrdinalIgnoreCase))
+            {
+                if (string.IsNullOrWhiteSpace(detail))
+                    return 0;
+
+                var hasHorizontal = detail.Contains("support", StringComparison.OrdinalIgnoreCase)
+                    || detail.Contains("resistance", StringComparison.OrdinalIgnoreCase)
+                    || detail.Contains("horizontal", StringComparison.OrdinalIgnoreCase);
+                var hasTrendline = detail.Contains("trendline", StringComparison.OrdinalIgnoreCase);
+                return (hasHorizontal || hasTrendline) ? 2 : 0; // Fib golden zone + at least one confluence.
+            }
+
+            var count = 0;
+            if (!string.IsNullOrWhiteSpace(detail))
+            {
+                if (detail.Contains("Fib", StringComparison.OrdinalIgnoreCase))
+                    count++;
+                if (detail.Contains("support", StringComparison.OrdinalIgnoreCase) ||
+                    detail.Contains("resistance", StringComparison.OrdinalIgnoreCase) ||
+                    detail.Contains("horizontal", StringComparison.OrdinalIgnoreCase))
+                    count++;
+                if (detail.Contains("trendline", StringComparison.OrdinalIgnoreCase))
+                    count++;
+                if (detail.Contains("confluence", StringComparison.OrdinalIgnoreCase))
+                    count = Math.Max(count, 2);
+            }
+
+            return count;
         }
 
         private static string BuildDedupeKey(string instrumentName, string signal)

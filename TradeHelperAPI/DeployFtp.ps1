@@ -1,6 +1,8 @@
 # FTP deploy to SmarterASP - overwrites files (no delete)
-# By default only uploads changed files (incremental). Use -ForceFull for full deploy.
-# Use -ModifiedWithinHours 4 to upload only files whose LastWriteTimeUtc is within the last N hours (ignores manifest).
+# By default only uploads changed files (incremental).
+# If publish.ps1 created .deploy-include.json, only those listed files are considered for upload.
+# Use -ForceFull for full deploy.
+# Use -ModifiedWithinHours 4 to upload only files whose LastWriteTimeUtc is within the last N hours (ignores deploy-include manifest).
 # IMPORTANT: Stop the site in SmarterASP Control Panel first to avoid 550 errors on locked files
 param(
     [string]$FtpHost = "win6053.site4now.net",
@@ -25,6 +27,24 @@ if (-not $FtpPass) {
 if (-not $SourcePath) { $SourcePath = Join-Path $PSScriptRoot "publish-out" }
 $SourcePath = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($SourcePath)
 if (-not (Test-Path $SourcePath)) { throw "Source path not found: $SourcePath" }
+
+$includeManifestPath = Join-Path $SourcePath ".deploy-include.json"
+$includeSet = $null
+if (-not $ForceFull -and $ModifiedWithinHours -eq 0 -and (Test-Path $includeManifestPath)) {
+    try {
+        $includeRaw = Get-Content $includeManifestPath -Raw | ConvertFrom-Json
+        $includeSet = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
+        foreach ($item in @($includeRaw)) {
+            if (-not [string]::IsNullOrWhiteSpace($item)) {
+                [void]$includeSet.Add(($item -replace "\\", "/").TrimStart("/"))
+            }
+        }
+        Write-Host "Deploy include manifest: $includeManifestPath ($($includeSet.Count) file(s))" -ForegroundColor Cyan
+    } catch {
+        Write-Host "WARNING: Failed to read deploy include manifest $includeManifestPath. Falling back to normal file discovery." -ForegroundColor Yellow
+        $includeSet = $null
+    }
+}
 
 function Write-FtpFile {
     param([string]$LocalPath, [string]$RemotePath)
@@ -77,11 +97,21 @@ $files = @($allFiles | Where-Object {
     $rel -notmatch "^publish-out\\" -and
     $rel -notmatch "\\publish-test\\" -and
     $rel -notmatch "\\publish-out\\" -and
-    $rel -notmatch "\\publish\\publish\\"
+    $rel -notmatch "\\publish\\publish\\" -and
+    $rel -ne ".deploy-include.json"
 })
 $identityFiles = $allFiles | Where-Object { $_.FullName -match [regex]::Escape("wwwroot\Identity\") }
 if ($identityFiles.Count -gt 0) {
     Write-Host "Skipping $($identityFiles.Count) wwwroot/Identity files (locked when site runs). Stop site first for full deploy." -ForegroundColor Yellow
+}
+
+if ($includeSet -ne $null) {
+    $before = $files.Count
+    $files = @($files | Where-Object {
+        $relNorm = $_.FullName.Substring($SourcePath.Length).TrimStart("\", "/").Replace("\", "/")
+        $includeSet.Contains($relNorm)
+    })
+    Write-Host "Include-manifest filter: kept $($files.Count) of $before file(s)." -ForegroundColor Cyan
 }
 
 $timeFilterUtc = $null
@@ -124,6 +154,10 @@ $total = $toUpload.Count
 $consideredFiles = ($files | Where-Object { $_.FullName -notmatch "\.(user|pubxml)$" }).Count
 $skipped = $consideredFiles - $total
 if ($skipped -gt 0) { Write-Host "Skipping $skipped unchanged files" -ForegroundColor Gray }
+if ($total -eq 0) {
+    Write-Host "No files selected for upload." -ForegroundColor Yellow
+    exit 0
+}
 Write-Host "Uploading $total files..." -ForegroundColor Cyan
 
 $i = 0

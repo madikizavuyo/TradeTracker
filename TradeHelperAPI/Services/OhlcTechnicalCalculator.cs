@@ -123,5 +123,23 @@ namespace TradeHelper.Services
             if (rawK.Count < 3) return null;
             return rawK.Take(3).Average();
         }
+
+        public static double? AtrFromOhlc(IReadOnlyList<OhlcBar> bars, int period = 14)
+        {
+            if (bars == null || bars.Count < period + 1) return null;
+
+            double sumTr = 0;
+            for (var i = 0; i < period; i++)
+            {
+                var bar = bars[i];
+                var prevClose = bars[i + 1].Close;
+                var trueRange = Math.Max(
+                    bar.High - bar.Low,
+                    Math.Max(Math.Abs(bar.High - prevClose), Math.Abs(bar.Low - prevClose)));
+                sumTr += trueRange;
+            }
+
+            return sumTr / period;
+        }
     }
 }

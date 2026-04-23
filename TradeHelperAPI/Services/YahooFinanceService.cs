@@ -80,10 +80,53 @@ namespace TradeHelper.Services
             if (!Enabled) return null;
             var yahoo = ToYahooSymbol(instrumentName);
             if (yahoo == null) return null;
-
-            await ThrottleAsync();
             var range = minBars > 300 ? "5y" : "2y";
-            var url = $"https://query1.finance.yahoo.com/v8/finance/chart/{Uri.EscapeDataString(yahoo)}?interval=1d&range={range}";
+            return await FetchChartOhlcAsync(instrumentName, yahoo, "1d", range);
+        }
+
+        /// <summary>
+        /// Fetches 4H OHLC by pulling Yahoo 60m bars and aggregating them into 4-bar candles.
+        /// Returns newest-first.
+        /// </summary>
+        public async Task<List<OhlcTechnicalCalculator.OhlcBar>?> Fetch4HourOhlcAsync(string instrumentName, int minBars = 120)
+        {
+            if (!Enabled) return null;
+            var yahoo = ToYahooSymbol(instrumentName);
+            if (yahoo == null) return null;
+
+            var range = minBars > 240 ? "730d" : "180d";
+            var hourlyNewestFirst = await FetchChartOhlcAsync(instrumentName, yahoo, "60m", range);
+            if (hourlyNewestFirst == null || hourlyNewestFirst.Count < 16)
+                return null;
+
+            var hourlyChrono = hourlyNewestFirst.AsEnumerable().Reverse().ToList();
+            var bars4hChrono = new List<OhlcTechnicalCalculator.OhlcBar>();
+            for (var i = 0; i + 3 < hourlyChrono.Count; i += 4)
+            {
+                var chunk = hourlyChrono.Skip(i).Take(4).ToList();
+                if (chunk.Count < 4) break;
+                bars4hChrono.Add(new OhlcTechnicalCalculator.OhlcBar(
+                    chunk[0].Open,
+                    chunk.Max(b => b.High),
+                    chunk.Min(b => b.Low),
+                    chunk[^1].Close));
+            }
+
+            if (bars4hChrono.Count < Math.Max(20, minBars))
+                return null;
+
+            bars4hChrono.Reverse();
+            return bars4hChrono;
+        }
+
+        private async Task<List<OhlcTechnicalCalculator.OhlcBar>?> FetchChartOhlcAsync(
+            string instrumentName,
+            string yahooSymbol,
+            string interval,
+            string range)
+        {
+            await ThrottleAsync();
+            var url = $"https://query1.finance.yahoo.com/v8/finance/chart/{Uri.EscapeDataString(yahooSymbol)}?interval={Uri.EscapeDataString(interval)}&range={Uri.EscapeDataString(range)}";
 
             try
             {
@@ -91,7 +134,7 @@ namespace TradeHelper.Services
                 var json = await response.Content.ReadAsStringAsync();
                 if (!response.IsSuccessStatusCode)
                 {
-                    _logger.LogDebug("Yahoo chart HTTP {Status} for {Symbol}", (int)response.StatusCode, yahoo);
+                    _logger.LogDebug("Yahoo chart HTTP {Status} for {Symbol} ({Interval}, {Range})", (int)response.StatusCode, yahooSymbol, interval, range);
                     return null;
                 }
                 using var doc = JsonDocument.Parse(json);
@@ -104,7 +147,7 @@ namespace TradeHelper.Services
                 var result = resultArr[0];
                 if (result.TryGetProperty("error", out var err))
                 {
-                    _logger.LogDebug("Yahoo chart error for {Symbol}: {Err}", yahoo, err.ToString());
+                    _logger.LogDebug("Yahoo chart error for {Symbol}: {Err}", yahooSymbol, err.ToString());
                     return null;
                 }
 
@@ -141,7 +184,7 @@ namespace TradeHelper.Services
             }
             catch (Exception ex)
             {
-                _logger.LogDebug(ex, "Yahoo chart fetch failed for {Instrument} ({Yahoo})", instrumentName, yahoo);
+                _logger.LogDebug(ex, "Yahoo chart fetch failed for {Instrument} ({Yahoo}, {Interval}, {Range})", instrumentName, yahooSymbol, interval, range);
                 return null;
             }
         }

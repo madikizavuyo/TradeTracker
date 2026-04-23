@@ -1428,25 +1428,31 @@ namespace TradeHelper.Services
         }
 
         /// <summary>Runs the Asset Scanner analyzer with full diagnostic output (all intermediate values). Returns null when no bars are available.</summary>
-        public async Task<AssetScannerSignalAnalyzer.SignalDiagnostic?> DiagnoseSignalAsync(string instrumentName, double overallScore)
+        public async Task<AssetScannerSignalAnalyzer.SignalDiagnostic?> DiagnoseSignalAsync(string instrumentName, double overallScore, string? bias)
         {
             if (_yahooFinanceService == null || YahooFinanceService.ToYahooSymbol(instrumentName) == null)
                 return null;
-            var bars = await _yahooFinanceService.FetchDailyOhlcAsync(instrumentName, 120);
-            if (bars == null || bars.Count < 25)
+            var dailyBars = await _yahooFinanceService.FetchDailyOhlcAsync(instrumentName, 120);
+            var fourHourBars = await _yahooFinanceService.Fetch4HourOhlcAsync(instrumentName, 160);
+            if (dailyBars == null || dailyBars.Count < 25 || fourHourBars == null || fourHourBars.Count < 25)
                 return null;
             return AssetScannerSignalAnalyzer.Diagnose(
-                bars,
+                dailyBars,
+                fourHourBars,
                 overallScore,
+                bias,
+                instrumentName,
                 _config.GetValue("TrailBlazer:SignalSwingLookback", 30),
                 _config.GetValue("TrailBlazer:SignalResistanceLookback", 20),
                 _config.GetValue("TrailBlazer:SignalFibTolerancePct", 0.8),
                 _config.GetValue("TrailBlazer:SignalResistanceTolerancePct", 0.5),
-                _config.GetValue("TrailBlazer:SignalFibLookbackBars", 5),
                 _config.GetValue("TrailBlazer:SignalBuyThreshold", 6.0),
                 _config.GetValue("TrailBlazer:SignalSellThreshold", 4.0),
                 _config.GetValue("TrailBlazer:SignalTrendlinePivot", 2),
-                _config.GetValue("TrailBlazer:SignalTrendlineTolerancePct", 0.6));
+                _config.GetValue("TrailBlazer:SignalMinLegSizePct", 1.2),
+                _config.GetValue("TrailBlazer:SignalConfluencePctBuffer", 0.1),
+                _config.GetValue("TrailBlazer:SignalConfluenceAtrMultiplier", 0.5),
+                _config.GetValue("TrailBlazer:SignalConfluenceMaxPips", 15.0));
         }
 
         /// <summary>Asset Scanner signal engine (score-led direction + Fib/resistance alignment). Mutates score.</summary>
@@ -1458,30 +1464,38 @@ namespace TradeHelper.Services
                 return;
             try
             {
-                var bars = await _yahooFinanceService.FetchDailyOhlcAsync(instrumentName, 120);
-                if (bars == null || bars.Count < 25)
+                var dailyBars = await _yahooFinanceService.FetchDailyOhlcAsync(instrumentName, 120);
+                var fourHourBars = await _yahooFinanceService.Fetch4HourOhlcAsync(instrumentName, 160);
+                if (dailyBars == null || dailyBars.Count < 25 || fourHourBars == null || fourHourBars.Count < 25)
                     return;
                 var swingLookback = _config.GetValue("TrailBlazer:SignalSwingLookback", 30);
                 var continuationLookback = _config.GetValue("TrailBlazer:SignalResistanceLookback", 20);
                 var fibTolerance = _config.GetValue("TrailBlazer:SignalFibTolerancePct", 0.8);
                 var continuationTolerance = _config.GetValue("TrailBlazer:SignalResistanceTolerancePct", 0.5);
-                var fibLookbackBars = _config.GetValue("TrailBlazer:SignalFibLookbackBars", 5);
                 var buyThreshold = _config.GetValue("TrailBlazer:SignalBuyThreshold", 6.0);
                 var sellThreshold = _config.GetValue("TrailBlazer:SignalSellThreshold", 4.0);
-                var trendlinePivot = _config.GetValue("TrailBlazer:SignalTrendlinePivot", 2);
-                var trendlineTolerance = _config.GetValue("TrailBlazer:SignalTrendlineTolerancePct", 0.6);
+                var pivotStrength = _config.GetValue("TrailBlazer:SignalTrendlinePivot", 2);
+                var minLegSizePct = _config.GetValue("TrailBlazer:SignalMinLegSizePct", 1.2);
+                var confluencePctBuffer = _config.GetValue("TrailBlazer:SignalConfluencePctBuffer", 0.1);
+                var confluenceAtrMultiplier = _config.GetValue("TrailBlazer:SignalConfluenceAtrMultiplier", 0.5);
+                var confluenceMaxPips = _config.GetValue("TrailBlazer:SignalConfluenceMaxPips", 15.0);
                 var (finalSig, finalDet) = AssetScannerSignalAnalyzer.Analyze(
-                    bars,
+                    dailyBars,
+                    fourHourBars,
                     score.OverallScore,
+                    score.Bias,
+                    instrumentName,
                     swingLookback,
                     continuationLookback,
                     fibTolerance,
                     continuationTolerance,
-                    fibLookbackBars,
                     buyThreshold,
                     sellThreshold,
-                    trendlinePivot,
-                    trendlineTolerance);
+                    pivotStrength,
+                    minLegSizePct,
+                    confluencePctBuffer,
+                    confluenceAtrMultiplier,
+                    confluenceMaxPips);
                 score.TradeSetupSignal = finalSig;
                 score.TradeSetupDetail = finalDet != null && finalDet.Length > 500 ? finalDet[..500] : finalDet;
             }

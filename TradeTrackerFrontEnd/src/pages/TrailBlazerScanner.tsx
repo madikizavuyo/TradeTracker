@@ -15,14 +15,22 @@ import { TrailBlazerScore, ScoreHistoryEntry } from '@/lib/types';
 
 type AssetFilter = 'All' | 'ForexMajor' | 'ForexMinor' | 'Index' | 'Metal' | 'Commodity' | 'Bond';
 type BiasFilter = 'All' | 'Bullish' | 'Bearish' | 'Neutral';
-type SignalFilter = 'All' | 'BUY NOW' | 'SELL NOW' | 'STRONG_REVERSAL_BUY' | 'STRONG_REVERSAL_SELL' | 'REVERSAL_BUY' | 'REVERSAL_SELL' | 'RESISTANCE_BUY' | 'RESISTANCE_SELL' | 'TRENDLINE_BUY' | 'TRENDLINE_SELL' | 'BUY' | 'SELL' | 'WATCH' | 'NONE';
+type SignalFilter = 'All' | 'BUY NOW' | 'SELL NOW' | 'DOUBLE_CONFLUENCE_BUY' | 'DOUBLE_CONFLUENCE_SELL' | 'GOLDEN_ZONE_BUY' | 'GOLDEN_ZONE_SELL' | 'HORIZONTAL_CONFLUENCE_BUY' | 'HORIZONTAL_CONFLUENCE_SELL' | 'TRENDLINE_CONFLUENCE_BUY' | 'TRENDLINE_CONFLUENCE_SELL' | 'STRONG_REVERSAL_BUY' | 'STRONG_REVERSAL_SELL' | 'REVERSAL_BUY' | 'REVERSAL_SELL' | 'RESISTANCE_BUY' | 'RESISTANCE_SELL' | 'TRENDLINE_BUY' | 'TRENDLINE_SELL' | 'BUY' | 'SELL' | 'WATCH' | 'NONE';
 
 type SortKey = 'name' | 'class' | 'score' | 'bias' | 'signal' | 'fundamental' | 'cot' | 'retail' | 'news' | 'currency' | 'technical';
 type SortDir = 'asc' | 'desc';
 
 const SIGNAL_TOOLTIPS: Record<string, string> = {
-  'BUY NOW': 'All aligned bullish: scanner score > 6, price recently touched 50% or 61.8% Fib of the last down-leg AND is either bouncing off horizontal support OR respecting an ascending trendline. High-conviction entry.',
-  'SELL NOW': 'All aligned bearish: scanner score < 4, price recently touched 50% or 61.8% Fib of the last up-leg AND is either rejecting horizontal resistance OR respecting a descending trendline. High-conviction entry.',
+  'BUY NOW': 'Bullish golden zone is active and both horizontal support plus trendline confluence are aligned. Highest-conviction bullish entry.',
+  'SELL NOW': 'Bearish golden zone is active and both horizontal resistance plus trendline confluence are aligned. Highest-conviction bearish entry.',
+  'DOUBLE_CONFLUENCE_BUY': 'Daily horizontal support and the active 4H trendline are both aligned, but price has not entered the Fib golden zone yet.',
+  'DOUBLE_CONFLUENCE_SELL': 'Daily horizontal resistance and the active 4H trendline are both aligned, but price has not entered the Fib golden zone yet.',
+  'GOLDEN_ZONE_BUY': 'Price is inside the bullish 50%-61.8% Fib golden zone, but no double confluence is active yet.',
+  'GOLDEN_ZONE_SELL': 'Price is inside the bearish 50%-61.8% Fib golden zone, but no double confluence is active yet.',
+  'HORIZONTAL_CONFLUENCE_BUY': 'Price is respecting Daily support, but the 4H trendline is not aligned yet.',
+  'HORIZONTAL_CONFLUENCE_SELL': 'Price is respecting Daily resistance, but the 4H trendline is not aligned yet.',
+  'TRENDLINE_CONFLUENCE_BUY': 'Price is respecting the active 4H trendline, but Daily support is not aligned yet.',
+  'TRENDLINE_CONFLUENCE_SELL': 'Price is respecting the active 4H trendline, but Daily resistance is not aligned yet.',
   'STRONG_REVERSAL_BUY': 'Deep (61.8%) Fibonacci retrace of the last down-leg has been touched — classic reversal zone. Direction is BUY from the scanner score.',
   'STRONG_REVERSAL_SELL': 'Deep (61.8%) Fibonacci retrace of the last up-leg has been touched — classic reversal zone. Direction is SELL from the scanner score.',
   'REVERSAL_BUY': 'Shallow (50%) Fibonacci retrace of the last down-leg reached. Weaker reversal zone than 61.8% but still tradeable in a bullish scanner context.',
@@ -37,6 +45,23 @@ const SIGNAL_TOOLTIPS: Record<string, string> = {
   'STRONG_SELL': 'Legacy strong-sell label from older engine. Treat as high-conviction SELL.',
   'WATCH': 'Scanner score is in the neutral band (4–6). No actionable directional signal — monitor only.',
   'NONE': 'No signal generated (insufficient price history or neutral/unclear structure).',
+};
+
+const SIGNAL_STATUS_TEXT: Record<string, string> = {
+  'BUY NOW': 'Golden zone + double confluence',
+  'SELL NOW': 'Golden zone + double confluence',
+  'DOUBLE_CONFLUENCE_BUY': 'Horizontal + trendline',
+  'DOUBLE_CONFLUENCE_SELL': 'Horizontal + trendline',
+  'GOLDEN_ZONE_BUY': 'Golden zone only',
+  'GOLDEN_ZONE_SELL': 'Golden zone only',
+  'HORIZONTAL_CONFLUENCE_BUY': 'Horizontal only',
+  'HORIZONTAL_CONFLUENCE_SELL': 'Horizontal only',
+  'TRENDLINE_CONFLUENCE_BUY': 'Trendline only',
+  'TRENDLINE_CONFLUENCE_SELL': 'Trendline only',
+  'BUY': 'Directional only',
+  'SELL': 'Directional only',
+  'WATCH': 'Neutral bias',
+  'NONE': 'No setup',
 };
 
 export default function TrailBlazerScanner() {
@@ -213,9 +238,18 @@ export default function TrailBlazerScanner() {
     if (!sig || sig === 'NONE') return <span className="text-muted-foreground text-xs" title={SIGNAL_TOOLTIPS['NONE']}>—</span>;
     const u = sig.toUpperCase();
     const tip = (detail && detail.trim().length > 0 ? detail : SIGNAL_TOOLTIPS[u]) ?? SIGNAL_TOOLTIPS[u] ?? '';
+    const statusText = SIGNAL_STATUS_TEXT[u] ?? 'Signal active';
     const badge = (() => {
       if (u === 'BUY NOW') return <Badge className="bg-green-800 hover:bg-green-800 text-white text-xs">BUY NOW</Badge>;
       if (u === 'SELL NOW') return <Badge className="bg-red-800 hover:bg-red-800 text-white text-xs">SELL NOW</Badge>;
+      if (u === 'DOUBLE_CONFLUENCE_BUY') return <Badge className="bg-sky-700 hover:bg-sky-700 text-white text-xs">DOUBLE CONF BUY</Badge>;
+      if (u === 'DOUBLE_CONFLUENCE_SELL') return <Badge className="bg-purple-700 hover:bg-purple-700 text-white text-xs">DOUBLE CONF SELL</Badge>;
+      if (u === 'GOLDEN_ZONE_BUY') return <Badge className="bg-amber-600 hover:bg-amber-600 text-white text-xs">GOLDEN ZONE BUY</Badge>;
+      if (u === 'GOLDEN_ZONE_SELL') return <Badge className="bg-orange-600 hover:bg-orange-600 text-white text-xs">GOLDEN ZONE SELL</Badge>;
+      if (u === 'HORIZONTAL_CONFLUENCE_BUY') return <Badge className="bg-lime-700 hover:bg-lime-700 text-white text-xs">HORIZONTAL BUY</Badge>;
+      if (u === 'HORIZONTAL_CONFLUENCE_SELL') return <Badge className="bg-yellow-700 hover:bg-yellow-700 text-white text-xs">HORIZONTAL SELL</Badge>;
+      if (u === 'TRENDLINE_CONFLUENCE_BUY') return <Badge className="bg-cyan-700 hover:bg-cyan-700 text-white text-xs">TRENDLINE BUY</Badge>;
+      if (u === 'TRENDLINE_CONFLUENCE_SELL') return <Badge className="bg-fuchsia-700 hover:bg-fuchsia-700 text-white text-xs">TRENDLINE SELL</Badge>;
       if (u === 'STRONG_BUY') return <Badge className="bg-green-700 hover:bg-green-700 text-white text-xs">STRONG BUY</Badge>;
       if (u === 'STRONG_REVERSAL_BUY') return <Badge className="bg-emerald-700 hover:bg-emerald-700 text-white text-xs">STRONG REVERSAL BUY</Badge>;
       if (u === 'STRONG_REVERSAL_SELL') return <Badge variant="destructive" className="text-xs">STRONG REVERSAL SELL</Badge>;
@@ -231,7 +265,12 @@ export default function TrailBlazerScanner() {
       if (u === 'WATCH') return <Badge variant="outline" className="text-amber-700 border-amber-600 text-xs">WATCH</Badge>;
       return <span className="text-xs text-muted-foreground">{sig}</span>;
     })();
-    return <span title={tip}>{badge}</span>;
+    return (
+      <div className="inline-flex flex-col items-center gap-1" title={tip}>
+        {badge}
+        <span className="text-[10px] leading-none text-muted-foreground">{statusText}</span>
+      </div>
+    );
   };
 
   if (loading) {
@@ -256,7 +295,7 @@ export default function TrailBlazerScanner() {
     );
   }
 
-  const signalOptions: SignalFilter[] = ['All', 'BUY NOW', 'SELL NOW', 'STRONG_REVERSAL_BUY', 'STRONG_REVERSAL_SELL', 'REVERSAL_BUY', 'REVERSAL_SELL', 'RESISTANCE_BUY', 'RESISTANCE_SELL', 'TRENDLINE_BUY', 'TRENDLINE_SELL', 'BUY', 'SELL', 'WATCH', 'NONE'];
+  const signalOptions: SignalFilter[] = ['All', 'BUY NOW', 'SELL NOW', 'DOUBLE_CONFLUENCE_BUY', 'DOUBLE_CONFLUENCE_SELL', 'GOLDEN_ZONE_BUY', 'GOLDEN_ZONE_SELL', 'HORIZONTAL_CONFLUENCE_BUY', 'HORIZONTAL_CONFLUENCE_SELL', 'TRENDLINE_CONFLUENCE_BUY', 'TRENDLINE_CONFLUENCE_SELL', 'STRONG_REVERSAL_BUY', 'STRONG_REVERSAL_SELL', 'REVERSAL_BUY', 'REVERSAL_SELL', 'RESISTANCE_BUY', 'RESISTANCE_SELL', 'TRENDLINE_BUY', 'TRENDLINE_SELL', 'BUY', 'SELL', 'WATCH', 'NONE'];
 
   return (
     <div className="space-y-4">
@@ -289,7 +328,11 @@ export default function TrailBlazerScanner() {
             <section>
               <h4 className="font-semibold text-foreground">2. Signal tiers (strongest → weakest)</h4>
               <ul className="list-disc ml-5 text-muted-foreground space-y-1">
-                <li><Badge className="bg-green-800 text-white text-xs">BUY NOW</Badge> / <Badge className="bg-red-800 text-white text-xs">SELL NOW</Badge> — All aligned: score + Fib (50% or 61.8%) + continuation confluence (horizontal S/R <em>or</em> trendline). <em>An email alert is broadcast to all users.</em></li>
+                <li><Badge className="bg-green-800 text-white text-xs">BUY NOW</Badge> / <Badge className="bg-red-800 text-white text-xs">SELL NOW</Badge> — Golden zone plus <strong>double confluence</strong>: both horizontal and trendline are aligned. <em>These are the clearest entry signals.</em></li>
+                <li><Badge className="bg-sky-700 text-white text-xs">DOUBLE CONF BUY</Badge> / <Badge className="bg-purple-700 text-white text-xs">DOUBLE CONF SELL</Badge> — Horizontal level and trendline are both active, but price is not inside the golden zone yet.</li>
+                <li><Badge className="bg-amber-600 text-white text-xs">GOLDEN ZONE BUY</Badge> / <Badge className="bg-orange-600 text-white text-xs">GOLDEN ZONE SELL</Badge> — Price is inside the 50%–61.8% golden zone, but confluence is not fully aligned yet.</li>
+                <li><Badge className="bg-lime-700 text-white text-xs">HORIZONTAL BUY</Badge> / <Badge className="bg-yellow-700 text-white text-xs">HORIZONTAL SELL</Badge> — Only Daily support/resistance is active.</li>
+                <li><Badge className="bg-cyan-700 text-white text-xs">TRENDLINE BUY</Badge> / <Badge className="bg-fuchsia-700 text-white text-xs">TRENDLINE SELL</Badge> — Only the 4H trendline is active.</li>
                 <li><Badge className="bg-emerald-700 text-white text-xs">STRONG REVERSAL BUY</Badge> / <Badge variant="destructive" className="text-xs">STRONG REVERSAL SELL</Badge> — Price tagged the <strong>61.8%</strong> Fibonacci retrace of the last completed leg; classic deep-retrace reversal zone.</li>
                 <li><Badge className="bg-teal-600/90 text-white text-xs">REVERSAL BUY (50%)</Badge> / <Badge className="bg-rose-600/90 text-white text-xs">REVERSAL SELL (50%)</Badge> — Shallower 50% Fib retrace. Weaker than 61.8% but still a tradeable zone when the score agrees.</li>
                 <li><Badge className="bg-lime-700 text-white text-xs">RESISTANCE BUY</Badge> / <Badge className="bg-orange-700 text-white text-xs">RESISTANCE SELL</Badge> — Trend-continuation at a <strong>horizontal</strong> level: price bouncing off trend support (buy) or rejecting trend resistance (sell).</li>
@@ -298,7 +341,7 @@ export default function TrailBlazerScanner() {
                 <li><Badge variant="outline" className="text-amber-700 border-amber-600 text-xs">WATCH</Badge> — Score is in the 4–6 neutral band. Monitor only.</li>
               </ul>
               <p className="text-muted-foreground mt-1">
-                Hover any signal badge in the table to see the exact levels, score and why it fired.
+                The small line under each badge shows the active status directly, so phone users do not need hover tooltips.
               </p>
             </section>
             <section>

@@ -223,9 +223,12 @@ namespace TradeHelper.Controllers
         [HttpGet("scores/history/{instrumentId}")]
         public async Task<IActionResult> GetScoreHistory(int instrumentId)
         {
+            // Newest snapshots first, then cap — previously OrderBy ascending + Take returned the *oldest* 90 rows (stuck on e.g. March).
+            const int maxPoints = 365;
             var history = await _context.TrailBlazerScores
                 .Where(s => s.InstrumentId == instrumentId)
-                .OrderBy(s => s.DateComputed)
+                .OrderByDescending(s => s.DateComputed)
+                .Take(maxPoints)
                 .Select(s => new
                 {
                     s.OverallScore,
@@ -235,9 +238,9 @@ namespace TradeHelper.Controllers
                     s.TechnicalScore,
                     s.DateComputed
                 })
-                .Take(90)
                 .ToListAsync();
 
+            history.Sort((a, b) => a.DateComputed.CompareTo(b.DateComputed));
             return Ok(history);
         }
 
@@ -911,7 +914,7 @@ namespace TradeHelper.Controllers
             });
         }
 
-        /// <summary>Diagnostic for a specific instrument's Asset Scanner signal: full analyzer intermediates (fib levels, swing H/L, touch flags, S/R, trendline) + email notifier state (last alert, recipients, SMTP config) + recent Breakout alert logs. Admin only.</summary>
+        /// <summary>Diagnostic for a specific instrument's Asset Scanner signal: Daily + 4H anchor mapping, Fib touch state, Daily horizontal confluence, email notifier state, and recent Breakout alert logs. Admin only.</summary>
         [Authorize(Roles = "Admin")]
         [HttpGet("signal-diagnostic/{symbol}")]
         public async Task<IActionResult> SignalDiagnostic(string symbol)
@@ -932,7 +935,7 @@ namespace TradeHelper.Controllers
             if (latestScore == null)
                 return NotFound(new { message = $"No TrailBlazerScore for {upper} yet" });
 
-            var diag = await _dataService.DiagnoseSignalAsync(upper, latestScore.OverallScore);
+            var diag = await _dataService.DiagnoseSignalAsync(upper, latestScore.OverallScore, latestScore.Bias);
 
             var alertPrefix = $"BreakoutAlertSent_{upper}_";
             var alertRows = await _context.SystemSettings
