@@ -1,5 +1,5 @@
 import { Link, useLocation, useNavigate } from 'react-router-dom';
-import { Home, TrendingUp, Target, FileText, LogOut, User, Settings, Upload, Crosshair, Brain, FileWarning, X } from 'lucide-react';
+import { Home, TrendingUp, Target, FileText, LogOut, User, Settings, Upload, Crosshair, Brain, FileWarning, Users, X } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { cn } from '@/lib/utils';
 import { useAuth } from '@/lib/AuthContext';
@@ -11,7 +11,6 @@ const baseNavigation = [
   { name: 'Reports', href: '/reports', icon: FileText },
   { name: 'Import', href: '/import', icon: Upload },
   { name: 'TrailBlazer', href: '/trailblazer', icon: Crosshair },
-  { name: 'AI Insights', href: '/ai-insights', icon: Brain },
   { name: 'Settings', href: '/settings', icon: Settings },
 ];
 
@@ -27,7 +26,13 @@ export function AppSidebar({ open = false, onClose }: AppSidebarProps) {
 
   const navigation = [
     ...baseNavigation,
-    ...(isAdmin ? [{ name: 'Error Logs', href: '/admin/error-logs', icon: FileWarning }] : []),
+    ...(isAdmin
+      ? [
+          { name: 'AI Insights', href: '/ai-insights', icon: Brain },
+          { name: 'Users', href: '/admin/users', icon: Users },
+          { name: 'Error Logs', href: '/admin/error-logs', icon: FileWarning },
+        ]
+      : []),
   ];
 
   const handleLogout = async () => {

@@ -7,6 +7,7 @@ import { cn } from '@/lib/utils';
 import { useState, useEffect } from 'react';
 import { useTrailBlazerRefresh } from '@/contexts/TrailBlazerRefreshContext';
 import { api } from '@/lib/api';
+import { useAuth } from '@/lib/AuthContext';
 
 const tabs = [
   { to: '/trailblazer', label: 'Overview', icon: LayoutDashboard },
@@ -27,6 +28,7 @@ function formatLastRefresh(iso: string): string {
 }
 
 export default function TrailBlazerLayout() {
+  const { isAdmin } = useAuth();
   const [refreshing, setRefreshing] = useState(false);
   const [lastRefresh, setLastRefresh] = useState<string | null>(null);
   const { triggerRefresh, progress, tabStatus } = useTrailBlazerRefresh();
@@ -127,10 +129,12 @@ export default function TrailBlazerLayout() {
               </p>
             )}
           </div>
-          <Button onClick={handleRefresh} disabled={refreshing || progress.status === 'running'} variant="outline" className="min-h-[44px] shrink-0">
-            <RefreshCw className={`h-4 w-4 mr-2 ${refreshing ? 'animate-spin' : ''}`} />
-            {refreshing ? 'Starting...' : progress.status === 'running' ? 'Refreshing...' : 'Refresh Data'}
-          </Button>
+          {isAdmin && (
+            <Button onClick={handleRefresh} disabled={refreshing || progress.status === 'running'} variant="outline" className="min-h-[44px] shrink-0">
+              <RefreshCw className={`h-4 w-4 mr-2 ${refreshing ? 'animate-spin' : ''}`} />
+              {refreshing ? 'Starting...' : progress.status === 'running' ? 'Refreshing...' : 'Refresh Data'}
+            </Button>
+          )}
         </div>
 
         <nav className="flex gap-1 border-b border-border overflow-x-auto -mx-4 px-4 sm:mx-0 sm:px-0 scrollbar-hide">

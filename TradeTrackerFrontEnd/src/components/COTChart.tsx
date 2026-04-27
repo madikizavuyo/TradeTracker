@@ -41,6 +41,21 @@ export function COTChart({ data }: COTChartProps) {
   }));
 
   return (
+    <div className="space-y-4">
+      <details className="rounded-lg border border-border bg-muted/20 px-3 py-2 text-sm">
+        <summary className="cursor-pointer font-medium text-foreground select-none">How to read this chart</summary>
+        <ul className="mt-2 space-y-1.5 text-muted-foreground list-disc pl-5 text-xs sm:text-sm">
+          <li>
+            Data is from the <strong>CFTC Commitments of Traders</strong> report (weekly). Bars show <strong>non-commercial</strong> (“large speculator”) <strong>long</strong> contracts (green), <strong>short</strong> contracts (red, plotted downward), and <strong>net</strong> long minus short (blue when net long, amber when net short).
+          </li>
+          <li>
+            <strong>Net positioning</strong> shows whether specs are leaning long or short in futures. Extreme nets can flag a <strong>crowded</strong> trade, but they are not bullish or bearish by themselves—you still need trend, fundamentals, and risk management.
+          </li>
+          <li>
+            <strong>Commercial</strong> hedgers are not plotted here; this view focuses on the positioning most often discussed for “hot money” flow.
+          </li>
+        </ul>
+      </details>
     <ResponsiveContainer width="100%" height={350}>
       <BarChart data={chartData} margin={{ top: 10, right: 30, left: 0, bottom: 5 }}>
         <CartesianGrid strokeDasharray="3 3" stroke="hsl(var(--border))" />
@@ -84,5 +99,6 @@ export function COTChart({ data }: COTChartProps) {
         </Bar>
       </BarChart>
     </ResponsiveContainer>
+    </div>
   );
 }

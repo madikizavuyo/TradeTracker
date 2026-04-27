@@ -499,6 +499,18 @@ class ApiService {
     return response.data;
   }
 
+  /** Admin: list users and roles. */
+  async getAdminUsers(): Promise<{ id: string; email: string; roles: string[] }[]> {
+    const response = await this.client.get('/admin/users');
+    return response.data;
+  }
+
+  /** Admin: create a user (default role User; optional admin). */
+  async createAdminUser(email: string, password: string, grantAdminRole = false): Promise<{ message: string; email: string; roles: string[] }> {
+    const response = await this.client.post('/admin/users', { email, password, grantAdminRole });
+    return response.data;
+  }
+
   // Email endpoints
   async sendCsv(file: File): Promise<EmailResponse> {
     const formData = new FormData();

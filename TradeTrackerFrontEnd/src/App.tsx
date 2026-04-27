@@ -22,6 +22,7 @@ import TrailBlazerRelativeStrength from './pages/TrailBlazerRelativeStrength';
 import TrailBlazerNewsSentiment from './pages/TrailBlazerNewsSentiment';
 import TrailBlazerBiasChanges from './pages/TrailBlazerBiasChanges';
 import AdminErrorLogs from './pages/AdminErrorLogs';
+import AdminUsers from './pages/AdminUsers';
 import { AdminRoute } from './components/AdminRoute';
 
 const router = createBrowserRouter(
@@ -129,9 +130,9 @@ const router = createBrowserRouter(
         {
           path: '/ai-insights',
           element: (
-            <ProtectedRoute>
+            <AdminRoute>
               <AIInsights />
-            </ProtectedRoute>
+            </AdminRoute>
           ),
         },
         {
@@ -139,6 +140,14 @@ const router = createBrowserRouter(
           element: (
             <AdminRoute>
               <AdminErrorLogs />
+            </AdminRoute>
+          ),
+        },
+        {
+          path: '/admin/users',
+          element: (
+            <AdminRoute>
+              <AdminUsers />
             </AdminRoute>
           ),
         },

@@ -15,6 +15,19 @@ namespace TradeHelper.Controllers
     [Authorize]
     public class TrailBlazerController : ControllerBase
     {
+        /// <summary>MyFXBook often returns 50/50 placeholders for these pairs; omit from retail sentiment list.</summary>
+        private static readonly HashSet<string> ExcludedRetailSentimentSymbols = new(StringComparer.OrdinalIgnoreCase)
+        {
+            "USDBRL", "JPYZAR", "CHFZAR", "CADZAR", "NZDZAR", "AUDZAR", "GBPZAR"
+        };
+
+        private static bool IsExcludedRetailSentimentSymbol(string? instrumentName)
+        {
+            if (string.IsNullOrWhiteSpace(instrumentName)) return false;
+            var n = instrumentName.Replace("/", "").Replace("_", "").Replace(" ", "").ToUpperInvariant();
+            return ExcludedRetailSentimentSymbols.Contains(n);
+        }
+
         private readonly ApplicationDbContext _context;
         private readonly IServiceProvider _serviceProvider;
         private readonly TrailBlazerDataService _dataService;
@@ -724,6 +737,10 @@ namespace TradeHelper.Controllers
                 .Where(s => s.DateComputed >= cutoff && s.Instrument != null && s.Instrument.Type == "Currency")
                 .OrderByDescending(s => s.DateComputed)
                 .ToListAsync();
+
+            rawSentiment = rawSentiment
+                .Where(s => !IsExcludedRetailSentimentSymbol(s.Instrument!.Name))
+                .ToList();
 
             var sentiment = rawSentiment
                 .GroupBy(s => s.InstrumentId)

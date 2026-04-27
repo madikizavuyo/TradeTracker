@@ -9,6 +9,7 @@ import { StatusDot } from '@/components/StatusDot';
 import { RefreshCw, TrendingUp, TrendingDown, ChevronLeft, ChevronRight, Sparkles, Newspaper, ExternalLink, Search } from 'lucide-react';
 import { api } from '@/lib/api';
 import { useTrailBlazerRefresh } from '@/contexts/TrailBlazerRefreshContext';
+import { useAuth } from '@/lib/AuthContext';
 import {
   TrailBlazerScore,
   TrailBlazerTopSetups,
@@ -18,8 +19,10 @@ import {
   TrailBlazerNewsItem,
   TrailBlazerOutlookItem,
 } from '@/lib/types';
+import { isRetailSentimentExcluded } from '@/lib/trailBlazerConstants';
 
 export default function TrailBlazer() {
+  const { isAdmin } = useAuth();
   const location = useLocation();
   const navigate = useNavigate();
   const { triggerRefresh, setTabStatus } = useTrailBlazerRefresh();
@@ -56,7 +59,11 @@ export default function TrailBlazer() {
       setTopSetups(setupsRes);
       setHeatmap(heatmapRes);
       setCotData(cotRes);
-      setSentiment(sentimentRes);
+      const sentimentList = Array.isArray(sentimentRes)
+        ? sentimentRes.filter((row: SentimentData) => !isRetailSentimentExcluded(row.symbol))
+        : [];
+      setSentiment(sentimentList);
+      setSentimentPage(0);
       setError(null);
     } catch (err) {
       console.error('Failed to load TrailBlazer data:', err);
@@ -205,10 +212,14 @@ export default function TrailBlazer() {
           <Card>
             <CardContent className="py-8 text-center">
               <p className="text-muted-foreground mb-4">{error}</p>
-              <Button onClick={handleRefresh} disabled={refreshing}>
-                <RefreshCw className={`h-4 w-4 mr-2 ${refreshing ? 'animate-spin' : ''}`} />
-                Generate Data
-              </Button>
+              {isAdmin ? (
+                <Button onClick={handleRefresh} disabled={refreshing}>
+                  <RefreshCw className={`h-4 w-4 mr-2 ${refreshing ? 'animate-spin' : ''}`} />
+                  Generate Data
+                </Button>
+              ) : (
+                <p className="text-sm text-muted-foreground">Ask an administrator to run a TrailBlazer refresh.</p>
+              )}
             </CardContent>
           </Card>
         )}
@@ -460,6 +471,9 @@ export default function TrailBlazer() {
               <StatusDot status={error ? 'error' : 'idle'} />
               Economic Heatmap
             </CardTitle>
+            <p className="text-sm text-muted-foreground pt-1">
+              Macro snapshot by currency. Open <strong>How to read this heatmap</strong> below the table for color and column meanings.
+            </p>
           </CardHeader>
           <CardContent>
             <EconomicHeatmap data={heatmap} />
@@ -468,12 +482,17 @@ export default function TrailBlazer() {
 
         {/* COT Positioning */}
         <Card>
-          <CardHeader className="flex flex-row items-center justify-between">
-            <CardTitle className="flex items-center gap-2">
-              <StatusDot status={error ? 'error' : scrapingCOT ? 'loading' : 'idle'} />
-              COT Institutional Positioning
-            </CardTitle>
-            <div className="flex gap-2">
+          <CardHeader className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+            <div className="space-y-1 min-w-0 flex-1">
+              <CardTitle className="flex items-center gap-2">
+                <StatusDot status={error ? 'error' : scrapingCOT ? 'loading' : 'idle'} />
+                COT Institutional Positioning
+              </CardTitle>
+              <p className="text-sm text-muted-foreground">
+                CFTC positioning for large speculators. Use <strong>How to read this chart</strong> under the chart for a quick guide.
+              </p>
+            </div>
+            <div className="flex flex-wrap gap-2 shrink-0">
               <Button size="sm" variant="outline" onClick={() => loadData()} disabled={loading}>
                 {loading ? 'Loading...' : 'Reload'}
               </Button>
@@ -489,12 +508,17 @@ export default function TrailBlazer() {
 
         {/* Retail Sentiment */}
         <Card>
-          <CardHeader className="flex flex-row items-center justify-between">
-            <CardTitle className="flex items-center gap-2">
-              <StatusDot status={error ? 'error' : 'idle'} />
-              Retail Sentiment
-            </CardTitle>
-            <Button size="sm" variant="outline" onClick={() => loadData()} disabled={loading}>
+          <CardHeader className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+            <div className="space-y-1 min-w-0 flex-1">
+              <CardTitle className="flex items-center gap-2">
+                <StatusDot status={error ? 'error' : 'idle'} />
+                Retail Sentiment
+              </CardTitle>
+              <p className="text-sm text-muted-foreground">
+                MyFXBook community long/short mix per pair. See <strong>How to read retail sentiment</strong> below. A few crosses with unreliable data are omitted from this list.
+              </p>
+            </div>
+            <Button size="sm" variant="outline" onClick={() => loadData()} disabled={loading} className="shrink-0">
               {loading ? 'Loading...' : 'Reload'}
             </Button>
           </CardHeader>
@@ -505,6 +529,20 @@ export default function TrailBlazer() {
               </div>
             ) : (
               <div>
+                <details className="rounded-lg border border-border bg-muted/20 px-3 py-2 text-sm mb-4">
+                  <summary className="cursor-pointer font-medium text-foreground select-none">How to read retail sentiment</summary>
+                  <ul className="mt-2 space-y-1.5 text-muted-foreground list-disc pl-5 text-xs sm:text-sm">
+                    <li>
+                      Each bar is the share of sampled retail accounts <strong>long</strong> (green) vs <strong>short</strong> (red) on that symbol, from MyFXBook’s community outlook.
+                    </li>
+                    <li>
+                      This is <strong>positioning</strong>, not price. Very high long share can mean a crowded long (often watched as a contrarian clue); very high short share the opposite. Readings near 50/50 usually mean little edge from positioning alone.
+                    </li>
+                    <li>
+                      Combine with your trend, fundamentals, and risk management. Retail data is a single input, not a trade signal by itself.
+                    </li>
+                  </ul>
+                </details>
                 <div className="space-y-3">
                   {paginatedSentiment.map(s => (
                     <div key={s.symbol} className="flex items-center gap-3">

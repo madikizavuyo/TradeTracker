@@ -8,6 +8,7 @@ import { Label } from '@/components/ui/label';
 import { Badge } from '@/components/ui/badge';
 import { Settings as SettingsIcon, DollarSign, Check, AlertCircle, RefreshCw } from 'lucide-react';
 import { api } from '@/lib/api';
+import { useAuth } from '@/lib/AuthContext';
 
 interface Currency {
   code: string;
@@ -16,6 +17,7 @@ interface Currency {
 }
 
 export default function Settings() {
+  const { isAdmin } = useAuth();
   const [currencies, setCurrencies] = useState<Currency[]>([]);
   const [selectedCurrency, setSelectedCurrency] = useState('USD');
   const [loading, setLoading] = useState(false);
@@ -289,43 +291,42 @@ export default function Settings() {
           </CardContent>
         </Card>
 
-        {/* Data Load */}
-        <Card>
-          <CardHeader>
-            <CardTitle className="flex items-center gap-2">
-              <RefreshCw className="h-5 w-5" />
-              TrailBlazer Data Load
-            </CardTitle>
-            <CardDescription>
-              Manually trigger a TrailBlazer data load (runs every 12 hours automatically). Fetches economic heatmap, COT reports, MyFXBook sentiment, and computes scores.
-            </CardDescription>
-          </CardHeader>
-          <CardContent className="space-y-4">
-            <Button
-              onClick={handleRunDataLoad}
-              disabled={dataLoadLoading}
-            >
-              <RefreshCw className={`h-4 w-4 mr-2 ${dataLoadLoading ? 'animate-spin' : ''}`} />
-              {dataLoadLoading ? 'Starting...' : 'Run Data Load'}
-            </Button>
-            {dataLoadMessage && (
-              <div
-                className={`flex items-start space-x-2 p-3 rounded-lg text-sm ${
-                  dataLoadMessage.type === 'success'
-                    ? 'bg-success/10 text-success border border-success/20'
-                    : 'bg-destructive/10 text-destructive border border-destructive/20'
-                }`}
-              >
-                {dataLoadMessage.type === 'success' ? (
-                  <Check className="h-5 w-5 shrink-0 mt-0.5" />
-                ) : (
-                  <AlertCircle className="h-5 w-5 shrink-0 mt-0.5" />
-                )}
-                <span>{dataLoadMessage.text}</span>
-              </div>
-            )}
-          </CardContent>
-        </Card>
+        {/* Data Load — administrators only */}
+        {isAdmin && (
+          <Card>
+            <CardHeader>
+              <CardTitle className="flex items-center gap-2">
+                <RefreshCw className="h-5 w-5" />
+                TrailBlazer Data Load
+              </CardTitle>
+              <CardDescription>
+                Manually trigger a TrailBlazer data load (runs every 12 hours automatically). Fetches economic heatmap, COT reports, MyFXBook sentiment, and computes scores.
+              </CardDescription>
+            </CardHeader>
+            <CardContent className="space-y-4">
+              <Button onClick={handleRunDataLoad} disabled={dataLoadLoading}>
+                <RefreshCw className={`h-4 w-4 mr-2 ${dataLoadLoading ? 'animate-spin' : ''}`} />
+                {dataLoadLoading ? 'Starting...' : 'Run Data Load'}
+              </Button>
+              {dataLoadMessage && (
+                <div
+                  className={`flex items-start space-x-2 p-3 rounded-lg text-sm ${
+                    dataLoadMessage.type === 'success'
+                      ? 'bg-success/10 text-success border border-success/20'
+                      : 'bg-destructive/10 text-destructive border border-destructive/20'
+                  }`}
+                >
+                  {dataLoadMessage.type === 'success' ? (
+                    <Check className="h-5 w-5 shrink-0 mt-0.5" />
+                  ) : (
+                    <AlertCircle className="h-5 w-5 shrink-0 mt-0.5" />
+                  )}
+                  <span>{dataLoadMessage.text}</span>
+                </div>
+              )}
+            </CardContent>
+          </Card>
+        )}
         </div>
       </div>
     </AppLayout>

@@ -65,6 +65,24 @@ export function EconomicHeatmap({ data }: EconomicHeatmapProps) {
 
   return (
     <div className="space-y-6 overflow-x-auto">
+      <details className="rounded-lg border border-border bg-muted/20 px-3 py-2 text-sm">
+        <summary className="cursor-pointer font-medium text-foreground select-none">How to read this heatmap</summary>
+        <ul className="mt-2 space-y-1.5 text-muted-foreground list-disc pl-5 text-xs sm:text-sm">
+          <li>
+            Each cell is the <strong>latest value</strong> we have for that <strong>currency row</strong> and <strong>indicator column</strong> (mostly FRED-backed macro data used in TrailBlazer fundamentals).
+          </li>
+          <li>
+            <span className="text-green-400 font-medium">Green</span> means the recent print is scored as <strong>supportive</strong> for that currency’s fundamental picture;{' '}
+            <span className="text-red-400 font-medium">red</span> as a <strong>headwind</strong>; <span className="text-yellow-400 font-medium">amber</span> is <strong>neutral or mixed</strong>.
+          </li>
+          <li>
+            Read <strong>across a row</strong> to see the broad macro mix for one currency (growth, inflation, labour, rates). The second table is <strong>USD-only</strong> series (Treasury yields, dollar index, PCE, job openings, jobless claims).
+          </li>
+          <li>
+            This is a <strong>snapshot</strong>, not a trade signal: use it as context next to price, policy, and your own thesis.
+          </li>
+        </ul>
+      </details>
       <div>
         <p className="text-xs text-muted-foreground mb-2">Cross-currency economic indicators</p>
         <table className="w-full text-sm">

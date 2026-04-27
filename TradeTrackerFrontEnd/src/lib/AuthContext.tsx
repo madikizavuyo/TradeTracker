@@ -39,6 +39,17 @@ function decodeJWT(token: string) {
   }
 }
 
+/** Role claims as emitted by ASP.NET Identity JWT (long claim type or short `role`). */
+function rolesFromJwtToken(token: string): string[] {
+  const decoded = decodeJWT(token);
+  if (!decoded) return [];
+  const r =
+    decoded['http://schemas.microsoft.com/ws/2008/06/identity/claims/role'] ?? decoded.role;
+  if (Array.isArray(r)) return r.filter(Boolean).map(String);
+  if (typeof r === 'string' && r) return [r];
+  return [];
+}
+
 // Check if token is expiring soon (default: 30 minutes before expiry)
 function isTokenExpiringSoon(token: string, minutesBeforeExpiry: number = 30): boolean {
   try {
@@ -72,7 +83,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         try {
           const authCheck = await api.checkAuth();
             if (authCheck.authenticated) {
-            setRoles(authCheck.roles ?? []);
+            let r = authCheck.roles ?? [];
+            if (r.length === 0 && token) r = rolesFromJwtToken(token);
+            setRoles(r);
             const userData = {
               id: authCheck.email,
               email: authCheck.email,
@@ -94,8 +107,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
             if (decoded && decoded.exp && decoded.exp * 1000 > Date.now()) {
             // Token is valid but checkAuth failed, use stored user and decode roles from JWT
             setUser(JSON.parse(storedUser));
-            const roleClaims = decoded['http://schemas.microsoft.com/ws/2008/06/identity/claims/role'] ?? decoded.role;
-            setRoles(Array.isArray(roleClaims) ? roleClaims : roleClaims ? [roleClaims] : []);
+            setRoles(rolesFromJwtToken(token));
           } else {
             // Token expired, clear storage
             localStorage.removeItem('token');
@@ -169,7 +181,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       // Try to get user details from checkAuth endpoint
       try {
         const authCheck = await api.checkAuth();
-        setRoles(authCheck.roles ?? []);
+        let r = authCheck.roles ?? [];
+        if (r.length === 0 && token) r = rolesFromJwtToken(token);
+        setRoles(r);
         const userData = {
           id: authCheck.email, // Use email as ID if no userId available
           email: authCheck.email,
@@ -179,7 +193,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         setUser(userData);
         localStorage.setItem('user', JSON.stringify(userData));
       } catch (error) {
-        // If checkAuth fails, use email-based user data
+        // If checkAuth fails, use email-based user data and roles from JWT
+        setRoles(rolesFromJwtToken(token));
         const userData = {
           id: userEmail || email,
           email: userEmail || email,
@@ -209,7 +224,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     if (token) {
       // Store JWT token
       localStorage.setItem('token', token);
-      
+      setRoles(rolesFromJwtToken(token));
+
       // Store user data
       const userData = {
         id: userId,
@@ -217,7 +233,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         firstName,
         lastName,
       };
-      
+
       setUser(userData);
       localStorage.setItem('user', JSON.stringify(userData));
     } else {
